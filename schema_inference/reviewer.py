@@ -1,0 +1,413 @@
+"""Human Review CLI — interactive terminal review of a MappingProposal.
+
+Requires an interactive TTY. Raises SystemExit when run non-interactively.
+
+Review tiers:
+  ≥ 0.85  Auto-approved — summary table, no prompts.
+  0.50–0.84  Flagged — [A]ccept / [M]odify / [S]kip per column.
+  < 0.50   Low-confidence — same prompts, LLM rationale shown.
+
+Outputs MappingDefinition JSON to schema_inference/mappings/.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+
+from .canonical.policy import CANONICAL_NAMES
+from .models import (
+    ApprovedMapping,
+    ColumnMapping,
+    MappingDefinition,
+    MappingProposal,
+    MissingFieldResolution,
+)
+
+MAPPINGS_DIR = Path(__file__).parent / "mappings"
+
+console = Console()
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _fmt_confidence(score: float) -> str:
+    pct = f"{score:.0%}"
+    if score >= 0.85:
+        return f"[green]{pct}[/green]"
+    if score >= 0.50:
+        return f"[yellow]{pct}[/yellow]"
+    return f"[red]{pct}[/red]"
+
+
+def _get_reviewer_identity() -> str:
+    try:
+        name = subprocess.run(
+            ["git", "config", "user.name"], capture_output=True, text=True, timeout=3
+        ).stdout.strip()
+        email = subprocess.run(
+            ["git", "config", "user.email"], capture_output=True, text=True, timeout=3
+        ).stdout.strip()
+        if name or email:
+            return f"{name} <{email}>".strip(" <>")
+    except Exception:
+        pass
+    env_reviewer = __import__("os").environ.get("SCHEMA_INFERENCE_REVIEWER")
+    if env_reviewer:
+        return env_reviewer
+    try:
+        return __import__("os").getlogin()
+    except Exception:
+        return "unknown"
+
+
+def _display_column_panel(m: ColumnMapping, tier_label: str) -> None:
+    dist_str = (
+        "  ".join(f"{k}={v}" for k, v in list(m.__dict__.items())[:0])
+        or "(none recorded)"
+    )
+    target_str = m.target_field or "[dim]→ extended_attributes[/dim]"
+    method_str = f"[cyan]{m.method}[/cyan]"
+    conf_str = _fmt_confidence(m.confidence)
+
+    body = (
+        f"[bold]Source:[/bold]  {m.source_column}  [dim](table: {m.source_table})[/dim]\n"
+        f"[bold]Tier:[/bold]    {tier_label}\n"
+        f"\n"
+        f"[bold]Proposed:[/bold]  {target_str}  ({conf_str})\n"
+        f"[bold]Method:[/bold]    {method_str}\n"
+        f"[bold]SQL:[/bold]       [yellow]{m.sql_expression}[/yellow]\n"
+        f"[bold]Notes:[/bold]     {m.notes}\n"
+        f"  name_sim={m.name_similarity:.2f} | type_compat={m.type_compatibility:.2f} | pattern={m.pattern_bonus:.2f}"
+    )
+    console.print(Panel(body, title=f"[bold]{m.source_column}[/bold]", border_style="blue"))
+
+
+def _prompt_action(m: ColumnMapping) -> tuple[ApprovedMapping, bool]:
+    """Prompt [A]ccept / [M]odify / [S]kip. Returns (ApprovedMapping, added_to_extended)."""
+    while True:
+        choice = Prompt.ask(
+            "[A]ccept / [M]odify / [S]kip (→ extended_attributes)",
+            choices=["a", "m", "s", "A", "M", "S"],
+            default="a",
+        ).lower()
+
+        if choice == "a":
+            return (
+                ApprovedMapping(
+                    source_column=m.source_column,
+                    source_table=m.source_table,
+                    target_field=m.target_field,
+                    sql_expression=m.sql_expression,
+                    confidence=m.confidence,
+                    method=m.method,
+                    notes=m.notes,
+                    reviewer_action="accepted",
+                ),
+                False,
+            )
+
+        if choice == "m":
+            canonical_list = sorted(CANONICAL_NAMES)
+            new_target_raw = Prompt.ask(
+                f"Target field (blank = extended_attributes, options: {', '.join(canonical_list[:8])} ...)",
+                default=m.target_field or "",
+            ).strip()
+            new_target: str | None = new_target_raw or None
+            if new_target and new_target not in CANONICAL_NAMES:
+                console.print(
+                    f"[red]Unknown field '{new_target}'. "
+                    f"Valid names: {', '.join(sorted(CANONICAL_NAMES))}[/red]"
+                )
+                continue
+            new_sql = Prompt.ask(
+                "SQL expression",
+                default=m.sql_expression,
+            ).strip()
+            new_notes = Prompt.ask("Notes (optional)", default=m.notes).strip()
+            return (
+                ApprovedMapping(
+                    source_column=m.source_column,
+                    source_table=m.source_table,
+                    target_field=new_target,
+                    sql_expression=new_sql or m.sql_expression,
+                    confidence=m.confidence,
+                    method="manual",
+                    notes=new_notes,
+                    reviewer_action="modified",
+                ),
+                new_target is None,
+            )
+
+        if choice == "s":
+            return (
+                ApprovedMapping(
+                    source_column=m.source_column,
+                    source_table=m.source_table,
+                    target_field=None,
+                    sql_expression=m.source_column,
+                    confidence=m.confidence,
+                    method=m.method,
+                    notes="Skipped by reviewer",
+                    reviewer_action="skipped",
+                ),
+                True,
+            )
+
+
+# ─── Review phases ────────────────────────────────────────────────────────────
+
+def _phase_auto_approved(
+    mappings: list[ColumnMapping],
+) -> list[ApprovedMapping]:
+    if not mappings:
+        return []
+
+    table = Table(box=box.ROUNDED, header_style="bold green", show_lines=False)
+    table.add_column("Source Column", style="dim")
+    table.add_column("Target Field", style="green")
+    table.add_column("Confidence", justify="right")
+    table.add_column("SQL Expression", style="yellow", max_width=50)
+    table.add_column("Method")
+
+    for m in mappings:
+        table.add_row(
+            m.source_column,
+            m.target_field or "extended_attributes",
+            _fmt_confidence(m.confidence),
+            m.sql_expression,
+            m.method,
+        )
+
+    console.print("\n[bold green]Auto-approved (confidence ≥ 0.85):[/bold green]")
+    console.print(table)
+    console.print(
+        f"[green]✓ {len(mappings)} column(s) auto-approved. No action required.[/green]"
+    )
+
+    return [
+        ApprovedMapping(
+            source_column=m.source_column,
+            source_table=m.source_table,
+            target_field=m.target_field,
+            sql_expression=m.sql_expression,
+            confidence=m.confidence,
+            method=m.method,
+            notes=m.notes,
+            reviewer_action="auto_approved",
+        )
+        for m in mappings
+    ]
+
+
+def _phase_review(
+    mappings: list[ColumnMapping], tier_label: str
+) -> tuple[list[ApprovedMapping], list[str]]:
+    """Returns (approved_list, extra_extended_attrs)."""
+    if not mappings:
+        return [], []
+
+    console.print(f"\n[bold yellow]{tier_label}:[/bold yellow] {len(mappings)} column(s) to review")
+    approved: list[ApprovedMapping] = []
+    extended_extra: list[str] = []
+
+    for m in mappings:
+        _display_column_panel(m, tier_label)
+        am, to_extended = _prompt_action(m)
+        approved.append(am)
+        if to_extended:
+            extended_extra.append(m.source_column)
+
+    return approved, extended_extra
+
+
+def _phase_missing_fields(
+    missing: list[str],
+) -> list[MissingFieldResolution]:
+    if not missing:
+        return []
+
+    console.print(f"\n[bold yellow]Missing standard fields:[/bold yellow] {len(missing)} field(s) have no source match")
+    resolutions: list[MissingFieldResolution] = []
+
+    for field_name in missing:
+        console.print(f"\n  [bold]{field_name}[/bold] — no source column mapped to this field")
+        choice = Prompt.ask(
+            "  [1] NULL  [2] Hardcode a value  [3] SQL derivation",
+            choices=["1", "2", "3"],
+            default="1",
+        )
+        if choice == "1":
+            resolutions.append(
+                MissingFieldResolution(
+                    target_field=field_name,
+                    resolution="NULL",
+                )
+            )
+        elif choice == "2":
+            val = Prompt.ask(f"  Hardcoded value for {field_name}").strip()
+            resolutions.append(
+                MissingFieldResolution(
+                    target_field=field_name,
+                    resolution="HARDCODED",
+                    hardcoded_value=val,
+                )
+            )
+        else:
+            sql = Prompt.ask(f"  SQL expression for {field_name}").strip()
+            resolutions.append(
+                MissingFieldResolution(
+                    target_field=field_name,
+                    resolution="DERIVED",
+                    derivation_sql=sql,
+                )
+            )
+
+    return resolutions
+
+
+def _phase_extended_attrs(
+    extended_columns: list[str],
+) -> list[str]:
+    """Confirm or individually review columns routed to extended_attributes."""
+    if not extended_columns:
+        return []
+
+    console.print(
+        f"\n[bold]extended_attributes routing:[/bold] "
+        f"{len(extended_columns)} column(s) will be included in the JSON blob"
+    )
+
+    table = Table(box=box.SIMPLE, show_header=False)
+    table.add_column("Column", style="dim")
+    for c in extended_columns:
+        table.add_row(c)
+    console.print(table)
+
+    choice = Prompt.ask(
+        "[C]onfirm all / [R]eview individually",
+        choices=["c", "r", "C", "R"],
+        default="c",
+    ).lower()
+
+    if choice == "c":
+        return extended_columns
+
+    # Individual review
+    kept: list[str] = []
+    for col in extended_columns:
+        assign = Prompt.ask(
+            f"  '{col}' → [E]xtended_attributes / [M]ap to canonical field",
+            choices=["e", "m", "E", "M"],
+            default="e",
+        ).lower()
+        if assign == "e":
+            kept.append(col)
+        else:
+            target = Prompt.ask(f"  Target field for '{col}'").strip()
+            if target in CANONICAL_NAMES:
+                console.print(
+                    f"  [yellow]Note: mapping '{col}' → '{target}' recorded in notes only. "
+                    f"Update approved_mappings manually if needed.[/yellow]"
+                )
+            else:
+                kept.append(col)
+
+    return kept
+
+
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+def review_proposal(
+    proposal: MappingProposal,
+    output_path: str | Path | None = None,
+) -> MappingDefinition:
+    """Interactively review a MappingProposal and return an approved MappingDefinition.
+
+    Writes the definition as JSON to output_path (defaults to
+    schema_inference/mappings/{source_name}_{table_name}_mapping.json).
+
+    Raises SystemExit if not running in an interactive TTY.
+    """
+    if not sys.stdout.isatty():
+        raise SystemExit(
+            "review_proposal requires an interactive terminal. "
+            "Run from a terminal, not in a pipe or CI job."
+        )
+
+    console.rule(f"[bold]Schema Review — {proposal.source_name} / {proposal.table_name}[/bold]")
+
+    # Split by tier
+    auto = [m for m in proposal.mappings if m.confidence >= 0.85]
+    flagged = [m for m in proposal.mappings if 0.50 <= m.confidence < 0.85]
+    low = [m for m in proposal.mappings if m.confidence < 0.50]
+
+    approved: list[ApprovedMapping] = []
+    extended: list[str] = list(proposal.unmapped_columns)
+
+    # Phase 1: auto-approved
+    approved.extend(_phase_auto_approved(auto))
+
+    # Phase 2: flagged (0.50–0.84)
+    ap2, ex2 = _phase_review(flagged, "Flagged for review (confidence 0.50–0.84)")
+    approved.extend(ap2)
+    extended.extend(ex2)
+
+    # Phase 3: low-confidence (< 0.50)
+    ap3, ex3 = _phase_review(low, "Low-confidence (< 0.50, LLM-assisted)")
+    approved.extend(ap3)
+    extended.extend(ex3)
+
+    # Phase 4: missing required fields
+    resolutions = _phase_missing_fields(proposal.missing_standard_fields)
+
+    # Phase 5: extended_attributes confirmation
+    extended = _phase_extended_attrs(list(dict.fromkeys(extended)))  # deduplicate, preserve order
+
+    # Show metadata columns excluded
+    if proposal.excluded_metadata_columns:
+        console.print(
+            f"\n[dim]Excluded CDC metadata columns (not mapped): "
+            f"{', '.join(proposal.excluded_metadata_columns)}[/dim]"
+        )
+
+    reviewer = _get_reviewer_identity()
+    definition = MappingDefinition(
+        source_name=proposal.source_name,
+        table_name=proposal.table_name,
+        approved_mappings=approved,
+        extended_attributes=extended,
+        missing_field_resolutions=resolutions,
+        reviewer_identity=reviewer,
+        reviewed_at=datetime.now(),
+        profile_hash="",  # populated by caller if SchemaProfile is available
+    )
+
+    # Write output
+    if output_path is None:
+        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
+        fname = f"{proposal.source_name}_{proposal.table_name}_mapping.json"
+        output_path = MAPPINGS_DIR / fname
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(definition.model_dump_json(indent=2), encoding="utf-8")
+
+    console.rule("[bold green]Review complete[/bold green]")
+    console.print(f"[green]✓ Saved:[/green] {out}")
+    auto_count = len([a for a in approved if a.reviewer_action == "auto_approved"])
+    manual_count = len(approved) - auto_count
+    console.print(
+        f"  {auto_count} auto-approved | {manual_count} manually reviewed | "
+        f"{len(extended)} → extended_attributes"
+    )
+
+    return definition
