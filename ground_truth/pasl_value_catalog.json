@@ -1,0 +1,284 @@
+{
+  "version": 1,
+  "source": "pasl",
+  "table": "pasl_policy",
+  "description": "Ground truth valid values, formats, and ranges for pasl_policy columns. Used by score_mappings.py and data-quality validation.",
+  "columns": {
+    "POL_NO": {
+      "type": "string_id",
+      "pattern": "^\\d{10}$",
+      "description": "10-digit zero-padded numeric policy ID",
+      "examples": ["0000123456", "0001987654"],
+      "notes": "Zero-padded to 10 chars. No alphabetic prefix (contrast with PCL-/PCM- in PAS-M)."
+    },
+    "POL_NO_SEQ": {
+      "type": "coded",
+      "valid_values": ["00", "01"],
+      "description": "Endorsement sequence: 00=original record, 01=first endorsement",
+      "notes": "Staging dedup: ROW_NUMBER() OVER (PARTITION BY pol_no ORDER BY pol_no_seq DESC). Only 00 and 01 exist in baseline data."
+    },
+    "EFF_DT": {
+      "type": "date",
+      "format": "YYYYMMDD",
+      "sentinel_value": "00000000",
+      "sentinel_meaning": "Unset/unknown date (seeded defect, ~2% of records)",
+      "valid_range": ["20180101", "20271231"],
+      "description": "Policy effective date in YYYYMMDD format"
+    },
+    "EXP_DT": {
+      "type": "date",
+      "format": "YYYYMMDD",
+      "valid_range": ["20190101", "20281231"],
+      "description": "Policy expiration date in YYYYMMDD format. Always 12 months after EFF_DT."
+    },
+    "TERM_EFF_DT": {
+      "type": "date",
+      "format": "YYYYMMDD",
+      "sentinel_value": "00000000",
+      "description": "Endorsement effective date. Equals EFF_DT on original records (POL_NO_SEQ=00). On endorsement records (POL_NO_SEQ=01), set to 30–180 days after EFF_DT."
+    },
+    "INS_NM": {
+      "type": "string",
+      "max_length": 60,
+      "description": "Insured full name (First Last format)",
+      "defects": {
+        "trailing_spaces": {
+          "rate": 0.05,
+          "description": "1–3 trailing spaces appended (CHAR-padding mainframe artifact)"
+        },
+        "mixed_case": {
+          "rate": 0.04,
+          "description": "Randomized character case (manual-keying artifact)"
+        }
+      }
+    },
+    "INS_ADDR": {
+      "type": "string",
+      "max_length": 100,
+      "description": "Street address",
+      "defects": {
+        "trailing_spaces": {
+          "rate": 0.05,
+          "description": "1–3 trailing spaces appended"
+        },
+        "embedded_comma": {
+          "rate": 0.05,
+          "description": "', Unit N' suffix appended (breaks naive comma-delimited CSV parsers)",
+          "pattern": ", Unit \\d{1,3}$"
+        }
+      }
+    },
+    "INS_CITY": {
+      "type": "string",
+      "max_length": 50,
+      "description": "Insured city name"
+    },
+    "INS_ST": {
+      "type": "coded",
+      "description": "Insured state abbreviation (2-char US state code)",
+      "examples": ["AL", "AK", "AZ", "CA", "FL", "NY", "TX"],
+      "notes": "This is the INSURED'S state, not the policy region code."
+    },
+    "INS_ZIP": {
+      "type": "string",
+      "pattern": "^\\d{5}$",
+      "description": "5-digit ZIP code"
+    },
+    "INS_SSN_LAST4": {
+      "type": "string",
+      "pattern": "^\\d{4}$",
+      "description": "Last 4 digits of insured SSN (PII fragment)"
+    },
+    "PROD_CD": {
+      "type": "coded",
+      "valid_values": ["PA", "PAP", "HO3", "HO5"],
+      "value_map": {
+        "PA":  {"canonical_code": "PA-STD",  "description": "Personal Auto Standard"},
+        "PAP": {"canonical_code": "PA-PREM", "description": "Personal Auto Premium"},
+        "HO3": {"canonical_code": "HO-STD",  "description": "Homeowners Standard (HO-3)"},
+        "HO5": {"canonical_code": "HO-PREM", "description": "Homeowners Premium (HO-5)"}
+      },
+      "description": "PAS-L native product codes — differ from canonical codes in other source systems",
+      "notes": "Resolved to canonical product_code via seed_pasl_lob_map in staging."
+    },
+    "POL_STAT_CD": {
+      "type": "coded",
+      "valid_values": ["A", "C", "T", "L"],
+      "value_map": {
+        "A": "Active",
+        "C": "Cancelled",
+        "T": "Terminated",
+        "L": "Lapsed"
+      },
+      "description": "Policy status code",
+      "notes": "PAS-L uses T (Terminated) where other systems use X (Expired). Resolved via seed_pasl_pol_stat_map."
+    },
+    "WRTG_AGT": {
+      "type": "string_code",
+      "pattern": "^AGY\\d{3,6}$",
+      "description": "Writing agent code — same as AGCY_CD in PAS-L (agency code reused as writing agent)",
+      "notes": "Not a numeric agent ID. Do not map to canonical agent_id."
+    },
+    "AGCY_CD": {
+      "type": "string_code",
+      "pattern": "^AGY\\d{3,6}$",
+      "description": "Agency code"
+    },
+    "CHNL_CD": {
+      "type": "coded",
+      "description": "Distribution channel code. Valid values from pasl_chnl_cfg.dat DIST_CD column.",
+      "examples": ["AGENT", "DIRECT", "BROKER", "AFFINITY"]
+    },
+    "REGN_CD": {
+      "type": "coded",
+      "description": "Region code. Valid values from pasl_regn_cfg.dat REGN_CD column.",
+      "examples": ["NE", "SE", "MW", "SW", "W"]
+    },
+    "UW_TIER": {
+      "type": "coded",
+      "valid_values": ["T1", "T2", "T3"],
+      "value_map": {
+        "T1": "Preferred (risk score ≥ 75)",
+        "T2": "Standard (risk score 40–74)",
+        "T3": "Non-standard (risk score < 40)"
+      },
+      "description": "Underwriting tier derived from RSK_SCR at policy issuance"
+    },
+    "ANNU_PREM_AMT": {
+      "type": "integer_cents",
+      "min_cents": 50000,
+      "max_cents": 50000000,
+      "min_dollars": 500.00,
+      "max_dollars": 500000.00,
+      "description": "Annual written premium in DECIMAL(11,0) implied 2-decimal (integer cents). Divide by 100 for dollar value.",
+      "transformation": "/ 100.0"
+    },
+    "MNTHLY_PREM_AMT": {
+      "type": "integer_cents",
+      "description": "Monthly premium = ANNU_PREM_AMT / 12 (rounded). Same cents encoding.",
+      "derivation": "ROUND(ANNU_PREM_AMT / 12)"
+    },
+    "COV_A_LIM": {
+      "type": "integer_cents",
+      "description": "COV_A per-occurrence limit in integer cents. Semantics by product: Dwelling (HO3/HO5) or Bodily Injury (PA/PAP).",
+      "product_semantics": {
+        "HO3": "Dwelling limit (~55% of total coverage)",
+        "HO5": "Dwelling limit (~55% of total coverage)",
+        "PA":  "Bodily Injury combined single limit",
+        "PAP": "Bodily Injury combined single limit"
+      }
+    },
+    "COV_A_DED": {
+      "type": "integer_cents",
+      "description": "COV_A deductible in integer cents. Semantics by product: Dwelling deductible (HO) or 0 for BI (PA)."
+    },
+    "COV_B_LIM": {
+      "type": "integer_cents",
+      "description": "COV_B limit. Other Structures (HO, ~10% of COV_A) or Property Damage (PA)."
+    },
+    "COV_B_DED": {
+      "type": "integer_cents",
+      "description": "COV_B deductible. 0 for both HO Other Structures and PA Property Damage."
+    },
+    "COV_C_LIM": {
+      "type": "integer_cents",
+      "description": "COV_C limit. Personal Property (HO, ~50% of COV_A) or Collision blanket (PA, always 0)."
+    },
+    "COV_C_DED": {
+      "type": "integer_cents",
+      "description": "COV_C deductible. Personal Property deductible (HO) or Collision deductible (PA: $500/$1000/$1500)."
+    },
+    "COV_D_LIM": {
+      "type": "integer_cents",
+      "description": "COV_D limit. Loss of Use (HO, ~20% of COV_A) or Comprehensive blanket (PA, always 0)."
+    },
+    "COV_D_DED": {
+      "type": "integer_cents",
+      "description": "COV_D deductible. 0 for HO Loss of Use or Comprehensive deductible (PA: $100/$250/$500)."
+    },
+    "COV_E_LIM": {
+      "type": "integer_cents",
+      "valid_values_cents": [10000000, 30000000],
+      "description": "COV_E limit. Liability ($100k or $300k for HO) or UM/UIM (same as COV_A BI for PA)."
+    },
+    "COV_E_DED": {
+      "type": "integer_cents",
+      "valid_values_cents": [0],
+      "description": "COV_E deductible. Always 0."
+    },
+    "COV_F_LIM": {
+      "type": "integer_cents",
+      "description": "COV_F limit. Medical Payments (HO: $1k or $5k) or PIP (PA: $5k/$10k/$20k)."
+    },
+    "COV_F_DED": {
+      "type": "integer_cents",
+      "valid_values_cents": [0],
+      "description": "COV_F deductible. Always 0."
+    },
+    "ADDL_INS_1_NM": {
+      "type": "string",
+      "nullable": true,
+      "null_rate_approx": 0.75,
+      "description": "Additional insured 1 full name. Empty string = null."
+    },
+    "ADDL_INS_1_REL": {
+      "type": "coded",
+      "valid_values": ["SP", "CH", "PR", "PG", "OT", ""],
+      "value_map": {
+        "SP": "Spouse",
+        "CH": "Child",
+        "PR": "Parent",
+        "PG": "Partner/Guardian",
+        "OT": "Other",
+        "": "(null — slot unused)"
+      },
+      "nullable": true,
+      "description": "Additional insured 1 relationship code. Empty when ADDL_INS_1_NM is empty."
+    },
+    "ADDL_INS_2_NM": {"type": "string", "nullable": true, "null_rate_approx": 0.95},
+    "ADDL_INS_2_REL": {"type": "coded", "valid_values": ["SP","CH","PR","PG","OT",""], "nullable": true},
+    "ADDL_INS_3_NM":  {"type": "string", "nullable": true, "null_rate_approx": 0.99},
+    "ADDL_INS_3_REL": {"type": "coded", "valid_values": ["SP","CH","PR","PG","OT",""], "nullable": true},
+    "ADDL_INS_4_NM":  {"type": "string", "nullable": true, "null_rate_approx": 0.99},
+    "ADDL_INS_4_REL": {"type": "coded", "valid_values": ["SP","CH","PR","PG","OT",""], "nullable": true},
+    "ADDL_INS_5_NM":  {"type": "string", "nullable": true, "null_rate_approx": 0.99},
+    "ADDL_INS_5_REL": {"type": "coded", "valid_values": ["SP","CH","PR","PG","OT",""], "nullable": true},
+    "PRIOR_CARR_CD": {
+      "type": "string_code",
+      "max_length": 3,
+      "nullable": true,
+      "description": "Prior carrier 3-char abbreviation (first 2 chars of word 1 + first char of word 2 from carrier name). Empty string = no prior carrier.",
+      "examples": ["ALF", "STF", "LBM", "PRG"],
+      "notes": "Derived from PRIOR_CARR_NM in the upstream PAS source. Not a standardized industry code."
+    },
+    "RSK_SCR": {
+      "type": "integer",
+      "min": 0,
+      "max": 100,
+      "nullable": true,
+      "description": "Underwriting risk score (0=highest risk, 100=lowest risk). Empty string = null.",
+      "notes": "Profiler should detect as integer with occasional empty (null) values."
+    },
+    "WINBK_FLG": {
+      "type": "boolean_yn",
+      "valid_values": ["Y", "N"],
+      "description": "Win-back eligible flag. Y/N boolean string.",
+      "transformation": "flag_to_boolean macro"
+    },
+    "CNCL_RSN_CD": {
+      "type": "coded",
+      "nullable": true,
+      "valid_values": ["NP", "RQ", "UW", "FR", "MV", "DC", ""],
+      "value_map": {
+        "NP": "Non-payment of premium",
+        "RQ": "Policyholder request",
+        "UW": "Underwriting grounds",
+        "FR": "Fraud",
+        "MV": "Moving out of territory",
+        "DC": "Duplicate coverage",
+        "": "(null — policy not cancelled)"
+      },
+      "description": "Cancellation reason code. Empty string on active policies."
+    }
+  }
+}

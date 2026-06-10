@@ -1,0 +1,435 @@
+# Ground truth schema catalog for pasl_policy
+# Used by scripts/score_mappings.py to evaluate schema inference quality.
+#
+# canonical_target: the correct slv_policy field name, or null (→ extended_attributes)
+# secondary_target: alternate canonical field derivable from the same source column
+# confidence_floor: minimum confidence the mapper should produce for an easy win
+# transformation: the SQL expression used in stg_pasl_policy.sql (ground truth SQL)
+# is_hard: true when the correct mapping requires domain knowledge or non-obvious transformation
+# notes: explanation of the mapping decision for reviewer display
+
+version: 1
+source: pasl
+table: pasl_policy
+description: >
+  Personal Lines legacy mainframe policy extract.
+  46-column flat denormalized record (CDC Shape B — no _CDC_TIMESTAMP/_CDC_OPERATION).
+  Endorsements as replacement records (POL_NO_SEQ 00=original, 01=first endorsement).
+  Monetary amounts as integer cents (DECIMAL(11,0) implied 2-decimal scale).
+  Dates as YYYYMMDD strings with '00000000' sentinel for unset dates.
+  Seeded data-quality defects: trailing spaces on INS_NM/INS_ADDR (~5% each),
+  mixed-case INS_NM (~4%), embedded comma in INS_ADDR (~5%), sentinel EFF_DT (~2%).
+
+# Canonical fields expected to be MISSING (no source column covers them)
+missing_standard_fields:
+  - name: customer_id
+    reason: >
+      PAS-L has no customer FK. Insured is identified only by INS_NM + INS_SSN_LAST4.
+      Staging model resolves to NULL; a customer matching step (WP-7) is out of scope here.
+  - name: agent_id
+    reason: >
+      WRTG_AGT carries the agency code (e.g. "AGY001"), not a numeric agent ID.
+      There is no agent-level identifier in this extract.
+  - name: policy_type
+    reason: >
+      PAS-L does not include a policy type classification column.
+      It is derivable from PROD_CD (PA/PAP → Personal Auto, HO3/HO5 → Personal Property)
+      but requires a seed lookup (seed_pasl_lob_map), not a direct column mapping.
+
+# Per-column mapping ground truth (46 columns in PASL_POL_HDR order)
+columns:
+
+  POL_NO:
+    canonical_target: policy_id
+    secondary_target: policy_number
+    confidence_floor: 0.75
+    transformation: "CAST(d.pol_no AS INTEGER)"
+    is_hard: false
+    notes: >
+      10-digit zero-padded numeric string (e.g. "0000123456").
+      Cast to INTEGER for policy_id. Kept as-is string for policy_number.
+      No non-digit characters to strip (unlike PCL-/PCM- prefixed IDs in PAS-M).
+      Both policy_id and policy_number are derivable; mapper will produce the
+      higher-confidence one (policy_id) and the secondary is noted here for completeness.
+
+  POL_NO_SEQ:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.pol_no_seq"
+    is_hard: false
+    notes: >
+      Endorsement sequence number ("00"=original, "01"=first endorsement).
+      Used as the staging dedup key — ROW_NUMBER() OVER (PARTITION BY pol_no ORDER BY pol_no_seq DESC).
+      Surfaces in extended_attributes for audit; never maps to a canonical silver field.
+
+  EFF_DT:
+    canonical_target: start_date
+    confidence_floor: 0.80
+    transformation: "{{ common_assets.parse_compact_date('d.eff_dt') }}"
+    date_format: YYYYMMDD
+    has_sentinel: true
+    sentinel_value: "00000000"
+    is_hard: false
+    notes: >
+      Policy effective date. YYYYMMDD format. parse_compact_date handles the format.
+      '00000000' is a seeded sentinel for unset dates (produces NULL after parse).
+
+  EXP_DT:
+    canonical_target: end_date
+    confidence_floor: 0.80
+    transformation: "{{ common_assets.parse_compact_date('d.exp_dt') }}"
+    date_format: YYYYMMDD
+    is_hard: false
+    notes: "Policy expiration date. YYYYMMDD format."
+
+  TERM_EFF_DT:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.term_eff_dt"
+    is_hard: false
+    notes: >
+      Endorsement effective date — the date on which a POL_NO_SEQ > 00 record
+      takes effect (30–180 days after EFF_DT). Not a canonical silver field.
+      Extended_attributes only.
+
+  INS_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "TRIM(d.ins_nm)"
+    is_hard: false
+    notes: >
+      Insured name (PII). Seeded data-quality defects: mixed-case (~4%) and
+      trailing spaces (~5%). TRIM() on read; staging exposes as insured_name but
+      no canonical silver mapping (customer identity comes from CRM, not PAS-L).
+
+  INS_ADDR:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "TRIM(d.ins_addr)"
+    is_hard: false
+    notes: >
+      Street address (PII). Seeded defects: embedded ", Unit N" suffix (~5%)
+      and trailing spaces (~5%). Extended_attributes only.
+
+  INS_CITY:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "TRIM(d.ins_city)"
+    is_hard: false
+    notes: "Insured city (PII). Extended_attributes only."
+
+  INS_ST:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.ins_st"
+    is_hard: true
+    notes: >
+      Insured state (2-char). This is the INSURED'S home state, not the policy
+      region code. A naive mapper may confuse this with region_code or territory_code.
+      Correct answer: extended_attributes.
+
+  INS_ZIP:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.ins_zip"
+    is_hard: false
+    notes: "Insured ZIP code (PII). Extended_attributes only."
+
+  INS_SSN_LAST4:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.ins_ssn_last4"
+    is_hard: false
+    notes: >
+      Last 4 digits of insured SSN (PII fragment). No canonical mapping.
+      Extended_attributes only.
+
+  PROD_CD:
+    canonical_target: product_code
+    confidence_floor: 0.65
+    transformation: "COALESCE(lb.product_code, d.prod_cd)"
+    is_hard: true
+    notes: >
+      PAS-L native product codes: PA, PAP, HO3, HO5.
+      These differ from the canonical codes (PA-STD, PA-PREM, HO-STD, HO-PREM).
+      Staging resolves via seed_pasl_lob_map lookup. The column name 'PROD_CD' is
+      a near-perfect alias match for product_code, so the mapper should still map
+      it correctly even though the value set is non-canonical. Marked is_hard because
+      the VALUE TRANSLATION is non-obvious; the FIELD MAPPING itself is straightforward.
+
+  POL_STAT_CD:
+    canonical_target: policy_status
+    confidence_floor: 0.80
+    transformation: "COALESCE(ps.policy_status, d.pol_stat_cd)"
+    is_hard: false
+    notes: >
+      PAS-L status codes: A=Active, C=Cancelled, T=Terminated, L=Lapsed.
+      Staging resolves via seed_pasl_pol_stat_map lookup. The canonical values
+      are free-text (Active/Cancelled/Terminated/Lapsed).
+
+  WRTG_AGT:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.wrtg_agt"
+    is_hard: true
+    notes: >
+      Writing agent code (agency code reused as the writing-agent identifier in PAS-L).
+      This is a STRING code (e.g. "AGY001"), not a numeric agent_id.
+      A naive mapper may map this to agent_id (canonical bigint required field).
+      Correct answer: extended_attributes. The WRTG_AGT abbreviation lacks the
+      standard _ID/_NO/_REF suffix pattern, lowering the rule-based ID confidence.
+
+  AGCY_CD:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.agcy_cd"
+    is_hard: false
+    notes: >
+      Agency code. Staging exposes as agency_code in stg_pasl_policy but there
+      is no agency_code field in the canonical silver policy schema. Extended_attributes.
+
+  CHNL_CD:
+    canonical_target: channel_code
+    confidence_floor: 0.75
+    transformation: "d.chnl_cd"
+    is_hard: false
+    notes: "Distribution channel code. Direct alias match to channel_code."
+
+  REGN_CD:
+    canonical_target: region_code
+    confidence_floor: 0.80
+    transformation: "d.regn_cd"
+    is_hard: false
+    notes: "Region code. Alias 'regn_cd' is listed in canonical region_code aliases."
+
+  UW_TIER:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.uw_tier"
+    is_hard: false
+    notes: >
+      Underwriting tier (T1/T2/T3). Staging exposes as underwriting_tier but this
+      is not a canonical silver policy field. Extended_attributes.
+
+  ANNU_PREM_AMT:
+    canonical_target: premium_amount
+    confidence_floor: 0.70
+    transformation: "CAST(d.annu_prem_amt AS {{ common_assets.decimal_type(12, 2) }}) / 100"
+    is_hard: true
+    notes: >
+      Annual written premium in integer cents (DECIMAL(11,0) implied 2-decimal).
+      The is_cents_integer flag should be set by the profiler (column name contains AMT,
+      inferred_type=integer). Correct SQL requires /100 cents conversion.
+      Hard because the transformation requires knowing the cents encoding convention.
+
+  MNTHLY_PREM_AMT:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.mnthly_prem_amt AS {{ common_assets.decimal_type(12, 2) }}) / 100"
+    is_hard: true
+    notes: >
+      Monthly premium (ANNU_PREM_AMT / 12). Not a canonical field — premium_amount
+      is always annual. A naive mapper may try to map this to premium_amount.
+      Correct answer: extended_attributes as monthly_premium.
+
+  COV_A_LIM:
+    canonical_target: coverage_limit
+    confidence_floor: 0.50
+    transformation: "CAST(d.cov_a_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: true
+    notes: >
+      COV_A is the primary coverage limit: Dwelling (HO) or Bodily Injury limit (PA).
+      Semantics differ by product — the key structural contrast for the AI demo.
+      Maps to coverage_limit as the "primary" coverage limit. Integer cents → dollars.
+      Confidence floor is lower because the positional name (COV_A_LIM) has
+      weaker alias overlap with coverage_limit than e.g. TOT_COV_LIM.
+
+  COV_A_DED:
+    canonical_target: policy_deductible
+    confidence_floor: 0.50
+    transformation: "CAST(d.cov_a_ded AS {{ common_assets.decimal_type(12, 2) }}) / 100"
+    is_hard: true
+    notes: >
+      COV_A deductible: primary coverage deductible (Dwelling deductible for HO,
+      no deductible for BI in PA). Maps to policy_deductible. Integer cents → dollars.
+      Hard because the positional name provides little semantic signal.
+
+  COV_B_LIM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_b_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: false
+    notes: >
+      COV_B limit: Other Structures (HO) or Property Damage limit (PA). Extended_attributes.
+      Only COV_A maps to a canonical field; B through F are product-specific positional slots.
+
+  COV_B_DED:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.cov_b_ded"
+    is_hard: false
+    notes: "COV_B deductible. Extended_attributes."
+
+  COV_C_LIM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_c_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_C limit: Personal Property (HO) or Collision blanket (PA). Extended_attributes."
+
+  COV_C_DED:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_c_ded AS {{ common_assets.decimal_type(12, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_C deductible. Extended_attributes."
+
+  COV_D_LIM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_d_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_D limit: Loss of Use (HO) or Comprehensive blanket (PA). Extended_attributes."
+
+  COV_D_DED:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_d_ded AS {{ common_assets.decimal_type(12, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_D deductible. Extended_attributes."
+
+  COV_E_LIM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_e_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_E limit: Liability (HO) or UM/UIM (PA). Extended_attributes."
+
+  COV_E_DED:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.cov_e_ded"
+    is_hard: false
+    notes: "COV_E deductible. Extended_attributes."
+
+  COV_F_LIM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "CAST(d.cov_f_lim AS {{ common_assets.decimal_type(14, 2) }}) / 100"
+    is_hard: false
+    notes: "COV_F limit: Medical Payments (HO) or PIP (PA). Extended_attributes."
+
+  COV_F_DED:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.cov_f_ded"
+    is_hard: false
+    notes: "COV_F deductible. Extended_attributes."
+
+  ADDL_INS_1_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_1_nm"
+    is_hard: false
+    notes: "Additional insured 1 name. Extended_attributes."
+
+  ADDL_INS_1_REL:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_1_rel"
+    is_hard: false
+    notes: "Additional insured 1 relationship code (SP/CH/PR/PG/OT). Extended_attributes."
+
+  ADDL_INS_2_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_2_nm"
+    is_hard: false
+    notes: "Additional insured 2 name. Extended_attributes."
+
+  ADDL_INS_2_REL:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_2_rel"
+    is_hard: false
+    notes: "Additional insured 2 relationship code. Extended_attributes."
+
+  ADDL_INS_3_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_3_nm"
+    is_hard: false
+    notes: "Additional insured 3 name. Extended_attributes."
+
+  ADDL_INS_3_REL:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_3_rel"
+    is_hard: false
+    notes: "Additional insured 3 relationship code. Extended_attributes."
+
+  ADDL_INS_4_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_4_nm"
+    is_hard: false
+    notes: "Additional insured 4 name. Extended_attributes."
+
+  ADDL_INS_4_REL:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_4_rel"
+    is_hard: false
+    notes: "Additional insured 4 relationship code. Extended_attributes."
+
+  ADDL_INS_5_NM:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_5_nm"
+    is_hard: false
+    notes: "Additional insured 5 name. Extended_attributes."
+
+  ADDL_INS_5_REL:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.addl_ins_5_rel"
+    is_hard: false
+    notes: "Additional insured 5 relationship code. Extended_attributes."
+
+  PRIOR_CARR_CD:
+    canonical_target: prior_carrier
+    confidence_floor: 0.55
+    transformation: "d.prior_carr_cd"
+    is_hard: true
+    notes: >
+      Prior carrier abbreviated code (e.g. "ALF" from "Allstate Fire"). 3-char.
+      The canonical field is prior_carrier (aliases: prior_carr_nm, prior_carrier_name, etc.)
+      but the PAS-L abbreviation (PRIOR_CARR_CD) does not appear in the alias list.
+      The name similarity score should still be reasonable. Marked is_hard because the
+      column name suffix (_CD) suggests a code field rather than a carrier name, and
+      the alias list contains prior_carr_nm not prior_carr_cd.
+
+  RSK_SCR:
+    canonical_target: risk_score
+    confidence_floor: 0.70
+    transformation: "CAST(NULLIF(d.rsk_scr, '') AS {{ common_assets.int_type() }})"
+    is_hard: false
+    notes: "Risk score (0–100 integer). Aliases rsk_scr → risk_score."
+
+  WINBK_FLG:
+    canonical_target: win_back_eligible
+    confidence_floor: 0.65
+    transformation: "{{ common_assets.flag_to_boolean('d.winbk_flg') }}"
+    is_hard: true
+    notes: >
+      Win-back eligible Y/N flag. The canonical alias list includes 'winbk_flg' but
+      the column name WINBK_FLG (abbreviated: WINBack FLaG) may score lower due
+      to non-standard abbreviation of 'back' → 'bk'. Transformation requires
+      flag_to_boolean macro.
+
+  CNCL_RSN_CD:
+    canonical_target: cancel_reason
+    confidence_floor: 0.70
+    transformation: "NULLIF(d.cncl_rsn_cd, '')"
+    is_hard: false
+    notes: "Cancellation reason code. Alias cncl_rsn_cd → cancel_reason."
