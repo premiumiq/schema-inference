@@ -129,3 +129,32 @@ class SchemaChangeReport(BaseModel):
     changes: list[ColumnChange]
     has_breaking_changes: bool
     new_columns_for_mapping: list[str]      # added columns to route through mapper
+
+
+# ─── Agent workflow output ────────────────────────────────────────────────────
+
+class AgentToolCall(BaseModel):
+    tool_name: str
+    inputs: dict
+    output: str
+
+class AgentTrace(BaseModel):
+    column_name: str
+    agent: Literal["mapping", "critic", "sql"]
+    tool_calls: list[AgentToolCall]
+    final_target: str | None = None
+    final_confidence: float
+    reasoning_summary: str
+
+class AgentMappingRun(BaseModel):
+    run_id: str
+    source_name: str
+    table_name: str
+    proposal: MappingProposal
+    traces: list[AgentTrace]
+    rule_pass_count: int
+    agent_pass_count: int
+    critic_overrides: int
+    eval_score: dict | None = None
+    started_at: datetime
+    duration_seconds: float
