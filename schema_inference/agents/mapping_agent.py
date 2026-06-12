@@ -55,6 +55,18 @@ When you have gathered enough information, respond with your FINAL ANSWER as a J
   "reasoning": "<one or two sentences explaining the decision>"
 }"""
 
+async def _call_with_retry(client, kwargs, max_retries: int = 6):
+    """Call the Anthropic API, retrying with exponential backoff on rate limits."""
+    import anthropic
+    delay = 12.0  # seconds; with 5 RPM, ~12s spacing keeps us under the cap
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(client.messages.create, **kwargs)
+        except anthropic.RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 60.0)
 
 def _build_user_prompt(col: ColumnProfile) -> str:
     """The initial message describing the column to map."""
@@ -74,20 +86,32 @@ def _build_user_prompt(col: ColumnProfile) -> str:
 
 
 def _extract_final_answer(text: str) -> dict:
-    """Pull the final JSON answer out of Claude's last text block."""
-    raw = text.strip()
-    # Strip markdown fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-    # Find the JSON object if there's surrounding prose
-    start = raw.find("{")
-    end = raw.rfind("}")
+    """Pull the final JSON answer out of Claude's last text block.
+
+    Handles answers that include analysis prose before a ```json fenced block,
+    bare JSON, or JSON with surrounding text. Strategy: prefer a fenced json
+    block; otherwise fall back to the last {...} object in the text.
+    """
+    import re as _re
+
+    # 1. Prefer an explicit ```json ... ``` fenced block (take the LAST one)
+    fenced = _re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
+    if fenced:
+        return json.loads(fenced[-1])
+
+    # 2. Otherwise, grab the last balanced-looking {...} object in the text
+    #    (last, because the final answer comes after any prose/analysis).
+    candidates = _re.findall(r"\{[^{}]*\"target_field\"[^{}]*\}", text, _re.DOTALL)
+    if candidates:
+        return json.loads(candidates[-1])
+
+    # 3. Last resort: first { to last }
+    start = text.find("{")
+    end = text.rfind("}")
     if start != -1 and end != -1:
-        raw = raw[start : end + 1]
-    return json.loads(raw)
+        return json.loads(text[start : end + 1])
+
+    raise ValueError("No JSON object found in answer")
 
 
 async def _map_one_column(
@@ -116,8 +140,8 @@ async def _map_one_column(
             kwargs["tools"] = TOOL_SCHEMAS
 
         # The anthropic SDK call is synchronous; run it in a thread so asyncio
-        # can run other columns concurrently.
-        response = await asyncio.to_thread(client.messages.create, **kwargs)
+        # can run other columns concurrently. Retry on rate-limit (429) with backoff.
+        response = await _call_with_retry(client, kwargs)
 
         # Did Claude ask to use a tool?
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
