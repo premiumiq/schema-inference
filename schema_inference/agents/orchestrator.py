@@ -130,12 +130,6 @@ def run_mapping(
         )
         traces.extend(sql_traces)    
 
-    # ── Step 5: EvaluatorAgent (demo/CI only) ────────────────────────────────
-    eval_score = None
-    if eval_mode:
-        from .evaluator_agent import run_evaluator
-        eval_score = run_evaluator(proposal)
-
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
@@ -154,6 +148,11 @@ def run_mapping(
         excluded_metadata_columns=excluded_metadata,
     )
 
+    # ── Step 5: EvaluatorAgent (demo/CI only) ────────────────────────────────
+    eval_score = None
+    if eval_mode:
+        from .evaluator_agent import run_evaluator
+        eval_score = run_evaluator(proposal)
     duration = time.perf_counter() - t0
 
     return AgentMappingRun(
