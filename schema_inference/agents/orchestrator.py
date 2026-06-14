@@ -42,6 +42,7 @@ def run_mapping(
     llm_threshold: float = DEFAULT_LLM_THRESHOLD,
     use_agent: bool = True,
     concurrency: int = 10,
+    eval_mode: bool = False,
 ) -> AgentMappingRun:
     """Run the agent mapping pipeline for one table.
 
@@ -129,6 +130,12 @@ def run_mapping(
         )
         traces.extend(sql_traces)    
 
+    # ── Step 5: EvaluatorAgent (demo/CI only) ────────────────────────────────
+    eval_score = None
+    if eval_mode:
+        from .evaluator_agent import run_evaluator
+        eval_score = run_evaluator(proposal)
+
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
@@ -158,7 +165,7 @@ def run_mapping(
         rule_pass_count=rule_pass_count,
         agent_pass_count=agent_pass_count,
         critic_overrides=critic_overrides,
-        eval_score=None,             # set by EvaluatorAgent when added
+        eval_score=eval_score,
         started_at=started_at,
         duration_seconds=round(duration, 2),
     )
