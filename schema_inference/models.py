@@ -46,7 +46,7 @@ class ColumnMapping(BaseModel):
     source_table: str
     target_field: str | None = None         # None = route to extended_attributes
     confidence: float
-    method: Literal["rule", "llm", "manual"]
+    method: Literal["rule", "llm", "manual", "critic"]
     sql_expression: str
     notes: str
     name_similarity: float = 0.0            # stored for reviewer display
@@ -71,7 +71,7 @@ class ApprovedMapping(BaseModel):
     target_field: str | None = None
     sql_expression: str
     confidence: float
-    method: Literal["rule", "llm", "manual"]
+    method: Literal["rule", "llm", "manual", "critic"]
     notes: str
     reviewer_action: Literal["auto_approved", "accepted", "modified", "skipped"]
 

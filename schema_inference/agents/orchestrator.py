@@ -111,6 +111,16 @@ def run_mapping(
         else:
             merged.append(rule_m)
 
+    # ── Step 3: CriticAgent — adversarial review of hard/below-floor columns ──
+    critic_overrides = 0
+    if use_agent:
+        from .critic_agent import run_critic_agent
+        profiles_by_name = {c.name: c for c in business_cols}
+        merged, critic_traces, critic_overrides = run_critic_agent(
+            merged, profiles_by_name
+        )
+        traces.extend(critic_traces)
+
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
@@ -139,7 +149,7 @@ def run_mapping(
         traces=traces,
         rule_pass_count=rule_pass_count,
         agent_pass_count=agent_pass_count,
-        critic_overrides=0,          # set by CriticAgent when added
+        critic_overrides=critic_overrides,
         eval_score=None,             # set by EvaluatorAgent when added
         started_at=started_at,
         duration_seconds=round(duration, 2),
