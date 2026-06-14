@@ -121,6 +121,14 @@ def run_mapping(
         )
         traces.extend(critic_traces)
 
+    # ── Step 4: SQLAgent — finalize SQL for critic-overridden / passthrough cols ──
+    if use_agent:
+        from .sql_agent import run_sql_agent
+        merged, sql_traces = run_sql_agent(
+            merged, profiles_by_name, is_empty_string_null=table.is_empty_string_null
+        )
+        traces.extend(sql_traces)    
+
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
