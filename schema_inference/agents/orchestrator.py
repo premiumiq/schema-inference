@@ -35,6 +35,19 @@ from ..models import (
 from ..canonical.policy import CANONICAL_FIELDS
 from .mapping_agent import run_mapping_agent
 
+import yaml
+from pathlib import Path
+
+_CONFIG_PATH = Path(__file__).parent.parent / "agent_config.yml"
+
+
+def load_agent_config() -> dict:
+    """Load agent_config.yml. Returns {} if absent (falls back to defaults)."""
+    if _CONFIG_PATH.exists():
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
 
 def run_mapping(
     table: TableProfile,

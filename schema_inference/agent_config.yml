@@ -1,0 +1,22 @@
+﻿# Agent workflow configuration for the schema inference mapper.
+# Consumed by the orchestrator to set model names, thresholds, and concurrency.
+
+mapping_agent:
+  model: claude-haiku-4-5-20251001
+  llm_threshold: 0.70          # rule-confidence below this routes to the agent
+  max_tool_calls_per_column: 5
+  concurrent_columns: 10        # async parallelism (lower if rate-limited)
+
+critic_agent:
+  model: claude-sonnet-4-6
+  enabled: true
+  target_hard_columns: true     # review is_hard columns
+  target_below_floor: true      # review columns below their confidence floor
+
+sql_agent:
+  model: claude-haiku-4-5-20251001
+  batch_size: 20
+
+evaluator:
+  enabled: false                # demo/CI only
+  fail_below_f1: null           # if set, CI exits non-zero when F1 < this
