@@ -56,18 +56,11 @@ def _connect():
     database = os.environ.get("SNOWFLAKE_DATABASE")
 
     key_path = os.environ.get("SNOWFLAKE_PRIVATE_KEY_PATH")
-    password = os.environ.get("SNOWFLAKE_PASSWORD")
 
     if key_path:
         return snowflake.connector.connect(
             account=account, user=user,
             private_key=_load_private_key(key_path),
-            warehouse=warehouse, role=role, database=database,
-        )
-
-    if password:
-        return snowflake.connector.connect(
-            account=account, user=user, password=password,
             warehouse=warehouse, role=role, database=database,
         )
 
