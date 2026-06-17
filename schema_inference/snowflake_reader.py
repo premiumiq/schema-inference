@@ -102,6 +102,11 @@ def profile_snowflake_table(
     try:
         cur = conn.cursor()
         fqtn = f'"{database}"."{schema}"."{table}"'
+
+        # True row count (independent of the profiling fetch limit)
+        cur.execute(f"SELECT COUNT(*) FROM {fqtn}")
+        true_row_count = cur.fetchone()[0]
+
         cur.execute(f"SELECT * FROM {fqtn} LIMIT {row_limit}")
 
         # Column names from the cursor description
@@ -128,7 +133,7 @@ def profile_snowflake_table(
 
     table_profile = TableProfile(
         name=tname,
-        row_count=row_count,
+        row_count=true_row_count,
         columns=columns,
         delimiter="",                 # not applicable for DB source
         source_file=f"{database}.{schema}.{table}",

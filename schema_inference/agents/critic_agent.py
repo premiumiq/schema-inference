@@ -180,7 +180,7 @@ def run_critic_agent(
 
         # Override
         new_target = r.get("target_field")
-        if new_target in ("", "null", "None"):
+        if new_target in ("", "null", "None", "extended_attributes"):
             new_target = None
         new_sql = r.get("sql_expression") or (m.source_column if new_target is None else m.sql_expression)
         rationale = r.get("rationale", "")

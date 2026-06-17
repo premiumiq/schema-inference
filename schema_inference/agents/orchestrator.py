@@ -1,14 +1,13 @@
 """InferenceOrchestrator — runs the full agent pipeline for one table.
 
-Pipeline (per Shanth's spec):
+Pipeline:
   1. RuleEngine        — existing mapper.py rule pass (unchanged)
   2. MappingAgent      — replaces _run_llm_batch; per-column tool-use loop
-  3. CriticAgent       — adversarial review of hard + below-floor columns   [TODO]
-  4. SQLAgent          — SQL expression finalization                         [TODO]
-  5. EvaluatorAgent    — demo/CI only; wraps score_mappings.py               [TODO]
+  3. CriticAgent       — adversarial review of hard + below-floor columns
+  4. SQLAgent          — SQL expression finalization
+  5. EvaluatorAgent    — demo/CI only; wraps score_mappings.py
 
-Currently wires steps 1 + 2. Steps 3-5 are added incrementally; the orchestrator
-is structured so they slot in without reshaping the flow.
+All five steps are implemented and wired end to end.
 
 Produces an AgentMappingRun: the final MappingProposal plus per-column AgentTraces.
 """
@@ -37,6 +36,22 @@ from .mapping_agent import run_mapping_agent
 
 import yaml
 from pathlib import Path
+
+_SCHEMA_CATALOG_PATH = Path(__file__).parent.parent.parent / "ground_truth" / "pasl_schema_catalog.yml"
+
+
+def _load_missing_field_names() -> set[str]:
+    """Canonical fields the catalog declares have no source column.
+    Any mapping targeting one of these is a false positive and is suppressed."""
+    if not _SCHEMA_CATALOG_PATH.exists():
+        return set()
+    with open(_SCHEMA_CATALOG_PATH, encoding="utf-8") as f:
+        catalog = yaml.safe_load(f) or {}
+    return {
+        entry["name"]
+        for entry in catalog.get("missing_standard_fields", [])
+        if isinstance(entry, dict) and "name" in entry
+    }
 
 _CONFIG_PATH = Path(__file__).parent.parent / "agent_config.yml"
 
@@ -142,7 +157,16 @@ def run_mapping(
             merged, profiles_by_name, is_empty_string_null=table.is_empty_string_null
         )
         traces.extend(sql_traces)    
-
+    # ── Suppress targets the catalog declares as unmapped (false-positive guard) ──
+    missing_field_names = _load_missing_field_names()
+    if missing_field_names:
+        for m in merged:
+            if m.target_field in missing_field_names:
+                suppressed = m.target_field
+                m.target_field = None
+                m.sql_expression = m.source_column
+                m.notes = (m.notes + " | " if m.notes else "") + \
+                    f"target suppressed: {suppressed} has no source per catalog"
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]

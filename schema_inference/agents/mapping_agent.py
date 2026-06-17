@@ -194,7 +194,7 @@ async def _map_one_column(
 
     # Normalize target ("null"/"" -> None)
     target = final.get("target_field")
-    if target in ("", "null", "None"):
+    if target in ("", "null", "None", "extended_attributes"):
         target = None
     confidence = float(final.get("confidence", 0.40))
     reasoning = final.get("reasoning", "")
@@ -267,7 +267,18 @@ def run_mapping_agent(
     # Register profiles so get_column_profile / generate_sql tools can see them
     register_profiles(all_profiles, is_empty_string_null)
 
-    results = asyncio.run(_run_async(columns, source_table, concurrency))
+    # asyncio.run() crashes if an event loop is already running (Jupyter, async
+    # CI runners). Detect that case and fall back to nest_asyncio.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        results = asyncio.run(_run_async(columns, source_table, concurrency))
+    else:
+        import nest_asyncio
+        nest_asyncio.apply()
+        results = loop.run_until_complete(
+            _run_async(columns, source_table, concurrency)
+        )
     mappings = [m for m, _ in results]
     traces = [t for _, t in results]
     return mappings, traces

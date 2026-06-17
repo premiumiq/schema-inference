@@ -1,4 +1,4 @@
-﻿"""Agent tools — pure Python functions the agents call during the mapping loop.
+"""Agent tools — pure Python functions the agents call during the mapping loop.
 
 Each tool is registered as an Anthropic tool schema (see TOOL_SCHEMAS at bottom).
 No I/O except reading the ground-truth value catalog and schema catalog once.
@@ -51,15 +51,22 @@ def _load_schema_catalog() -> dict:
 # The orchestrator populates this before invoking agents so get_column_profile
 # and generate_sql can look up the live profile by column name.
 
-_COLUMN_PROFILES: dict[str, ColumnProfile] = {}
-_IS_EMPTY_STRING_NULL: bool = True
+import contextvars
+
+# Per-context state (thread-safe and async-task-safe, unlike a plain module global).
+# Each execution context — thread, async task, or concurrent run — gets its own copy,
+# so concurrent mapping runs cannot clobber each other's profiles.
+_COLUMN_PROFILES_VAR: contextvars.ContextVar[dict[str, ColumnProfile]] = \
+    contextvars.ContextVar("column_profiles", default={})
+_IS_EMPTY_STRING_NULL_VAR: contextvars.ContextVar[bool] = \
+    contextvars.ContextVar("is_empty_string_null", default=True)
 
 
 def register_profiles(columns: list[ColumnProfile], is_empty_string_null: bool = True) -> None:
-    """Called by the orchestrator before the agent loop. Stores profiles for tool lookups."""
-    global _COLUMN_PROFILES, _IS_EMPTY_STRING_NULL
-    _COLUMN_PROFILES = {c.name: c for c in columns}
-    _IS_EMPTY_STRING_NULL = is_empty_string_null
+    """Called by the orchestrator before the agent loop. Stores profiles for tool
+    lookups in a context-local variable (safe under concurrency)."""
+    _COLUMN_PROFILES_VAR.set({c.name: c for c in columns})
+    _IS_EMPTY_STRING_NULL_VAR.set(is_empty_string_null)
 
 
 # ─── Tool 1: lookup_canonical ─────────────────────────────────────────────────
@@ -129,7 +136,7 @@ def score_name_similarity(source: str, target: str) -> float:
 
 def get_column_profile(column_name: str) -> dict | None:
     """Return the ColumnProfile for a source column as a dict, or None if unknown."""
-    col = _COLUMN_PROFILES.get(column_name)
+    col = _COLUMN_PROFILES_VAR.get().get(column_name)
     return col.model_dump() if col else None
 
 
@@ -160,11 +167,11 @@ def generate_sql(column_name: str, target_field: str, col_profile: dict | None =
     if col_profile is not None:
         col = ColumnProfile(**col_profile)
     else:
-        col = _COLUMN_PROFILES.get(column_name)
+        col = _COLUMN_PROFILES_VAR.get().get(column_name)
         if col is None:
             return column_name
 
-    return _generate_sql(col, field, _IS_EMPTY_STRING_NULL)
+    return _generate_sql(col, field, _IS_EMPTY_STRING_NULL_VAR.get())
 
 
 # ─── Anthropic tool schemas ───────────────────────────────────────────────────
