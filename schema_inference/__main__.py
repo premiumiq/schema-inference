@@ -57,7 +57,6 @@ def _cmd_profile(args: argparse.Namespace) -> None:
 
 
 def _cmd_map(args: argparse.Namespace) -> None:
-    from .mapper import map_table
     from .models import SchemaProfile
 
     profile_path = Path(args.profile)
@@ -72,13 +71,40 @@ def _cmd_map(args: argparse.Namespace) -> None:
         names = [t.name for t in profile.tables]
         sys.exit(f"Error: table '{table_name}' not in profile. Available: {names}")
 
-    print(f"Mapping {profile.source_name}/{table_name} ...")
-    proposal = map_table(
-        table,
-        source_name=profile.source_name,
-        llm_threshold=args.threshold,
-        use_llm=not args.no_llm,
-    )
+    if args.agent:
+        # ── Agent pipeline ───────────────────────────────────────────────
+        from .agents.orchestrator import run_mapping
+
+        print(f"Mapping {profile.source_name}/{table_name} with agent pipeline ...")
+        run = run_mapping(
+            table,
+            source_name=profile.source_name,
+            use_agent=True,
+            concurrency=args.concurrency,
+            eval_mode=args.eval,
+        )
+        proposal = run.proposal
+        print(
+            f"  rule={run.rule_pass_count} | agent={run.agent_pass_count} | "
+            f"critic_overrides={run.critic_overrides} | {run.duration_seconds}s"
+        )
+        if run.eval_score:
+            e = run.eval_score
+            print(
+                f"  ACCURACY: {e['correct']}/{e['total_columns']} correct | "
+                f"F1={e['f1']:.2f} | hard-F1={e['hard_f1']:.2f}"
+            )
+    else:
+        # ── Rule + single-batch LLM (original) ───────────────────────────
+        from .mapper import map_table
+
+        print(f"Mapping {profile.source_name}/{table_name} ...")
+        proposal = map_table(
+            table,
+            source_name=profile.source_name,
+            llm_threshold=args.threshold,
+            use_llm=not args.no_llm,
+        )
 
     mapped = sum(1 for m in proposal.mappings if m.target_field)
     unmapped = len(proposal.unmapped_columns)
@@ -250,6 +276,9 @@ def main() -> None:
     p_map.add_argument("--threshold", type=float, default=0.70, help="LLM trigger threshold (default: 0.70)")
     p_map.add_argument("--no-llm", action="store_true", help="Skip LLM pass entirely")
     p_map.add_argument("--output", default=None, help="Output JSON path (default: stdout)")
+    p_map.add_argument("--agent", action="store_true", help="Use the 5-agent pipeline instead of single-batch LLM")
+    p_map.add_argument("--concurrency", type=int, default=10, help="Agent concurrency (lower for rate limits, e.g. 1)")
+    p_map.add_argument("--eval", action="store_true", help="Score the result against ground truth (demo/CI)")
 
     # ── review ──
     p_review = sub.add_parser("review", help="Interactively review a MappingProposal → MappingDefinition JSON")

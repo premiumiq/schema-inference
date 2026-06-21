@@ -1,0 +1,284 @@
+"""MappingAgent — per-column tool-use loop that replaces _run_llm_batch.
+
+For each low-confidence column, we open a conversation with Claude Haiku and let
+it call tools (lookup_canonical, check_value_catalog, etc.) to investigate before
+deciding on a mapping. This replaces the old single-shot batch call, which guessed
+from the column name alone with no ability to look anything up.
+
+Flow per column:
+  1. Send Claude the column profile + instructions + tool definitions.
+  2. Claude calls a tool -> we execute it -> we return the result.
+  3. Repeat up to MAX_TOOL_CALLS, then force a final answer.
+  4. Parse Claude's final answer into a ColumnMapping + an AgentTrace.
+
+Columns are processed concurrently via asyncio (default 10 parallel).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from ..models import AgentToolCall, AgentTrace, ColumnMapping, ColumnProfile
+from .tools import TOOL_DISPATCH, TOOL_SCHEMAS, register_profiles
+
+MODEL = "claude-haiku-4-5-20251001"
+MAX_TOOL_CALLS = 5
+DEFAULT_CONCURRENCY = 10
+
+_SYSTEM_PROMPT = """You are an insurance data engineering agent. Your job is to map ONE \
+source column from a legacy policy admin system (PAS-L) to a canonical insurance policy \
+schema, OR decide it belongs in extended_attributes (no canonical mapping).
+
+You have tools. USE THEM before deciding. A column name alone is not enough:
+- lookup_canonical: find candidate target fields by name
+- check_value_catalog: discover the column's true type, value map, and defects.
+  This is critical — a name like ANNU_PREM_AMT hides that it is integer cents, and
+  WRTG_AGT looks like an agent id but is actually a string agency code.
+- score_name_similarity: compare a source column to a candidate target
+- get_column_profile: see sample values, null rate, inferred type, flags
+- get_hard_columns: check whether this column is a known hard case
+
+IMPORTANT REASONING RULES:
+- A strong name match is NOT sufficient. Always check the value catalog for hard columns.
+- If the value catalog note says a column is NOT a given field (e.g. "not a numeric
+  agent_id"), trust it and route to extended_attributes (target_field = null).
+- Monthly premium is NOT the canonical premium_amount (which is annual). Route to
+  extended_attributes.
+- The insured's state is NOT region_code or territory_code. Route to extended_attributes.
+
+When you have gathered enough information, respond with your FINAL ANSWER as a JSON object
+(and nothing else) in this exact form:
+{
+  "target_field": "<canonical field name, or null for extended_attributes>",
+  "confidence": <float 0.0-1.0>,
+  "reasoning": "<one or two sentences explaining the decision>"
+}"""
+
+async def _call_with_retry(client, kwargs, max_retries: int = 6):
+    """Call the Anthropic API, retrying with exponential backoff on rate limits."""
+    import anthropic
+    delay = 12.0  # seconds; with 5 RPM, ~12s spacing keeps us under the cap
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(client.messages.create, **kwargs)
+        except anthropic.RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 60.0)
+
+def _build_user_prompt(col: ColumnProfile) -> str:
+    """The initial message describing the column to map."""
+    return (
+        f"Map this source column.\n\n"
+        f"Column name: {col.name}\n"
+        f"Inferred type: {col.inferred_type}\n"
+        f"Null rate: {col.null_rate:.2f}\n"
+        f"Distinct count: {col.distinct_count}\n"
+        f"Sample values: {col.sample_values[:5]}\n"
+        f"is_id_column: {col.is_id_column}, "
+        f"is_coded_column: {col.is_coded_column}, "
+        f"is_cents_integer: {col.is_cents_integer}, "
+        f"date_format: {col.date_format}\n\n"
+        f"Investigate using your tools, then give your final JSON answer."
+    )
+
+
+def _extract_final_answer(text: str) -> dict:
+    """Pull the final JSON answer out of Claude's last text block.
+
+    Handles answers that include analysis prose before a ```json fenced block,
+    bare JSON, or JSON with surrounding text. Strategy: prefer a fenced json
+    block; otherwise fall back to the last {...} object in the text.
+    """
+    import re as _re
+
+    # 1. Prefer an explicit ```json ... ``` fenced block (take the LAST one)
+    fenced = _re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
+    if fenced:
+        return json.loads(fenced[-1])
+
+    # 2. Otherwise, grab the last balanced-looking {...} object in the text
+    #    (last, because the final answer comes after any prose/analysis).
+    candidates = _re.findall(r"\{[^{}]*\"target_field\"[^{}]*\}", text, _re.DOTALL)
+    if candidates:
+        return json.loads(candidates[-1])
+
+    # 3. Last resort: first { to last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        return json.loads(text[start : end + 1])
+
+    raise ValueError("No JSON object found in answer")
+
+
+async def _map_one_column(
+    client,
+    col: ColumnProfile,
+    source_table: str,
+) -> tuple[ColumnMapping, AgentTrace]:
+    """Run the tool-use loop for a single column. Returns (mapping, trace)."""
+
+    messages = [{"role": "user", "content": _build_user_prompt(col)}]
+    tool_calls_log: list[AgentToolCall] = []
+
+    final: dict | None = None
+
+    for _ in range(MAX_TOOL_CALLS + 1):
+        # On the last allowed turn, drop tools to force a text answer
+        use_tools = len(tool_calls_log) < MAX_TOOL_CALLS
+
+        kwargs = dict(
+            model=MODEL,
+            max_tokens=1024,
+            system=_SYSTEM_PROMPT,
+            messages=messages,
+        )
+        if use_tools:
+            kwargs["tools"] = TOOL_SCHEMAS
+
+        # The anthropic SDK call is synchronous; run it in a thread so asyncio
+        # can run other columns concurrently. Retry on rate-limit (429) with backoff.
+        response = await _call_with_retry(client, kwargs)
+
+        # Did Claude ask to use a tool?
+        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+        if tool_use_blocks and use_tools:
+            # Append Claude's turn (its tool requests) to the conversation
+            messages.append({"role": "assistant", "content": response.content})
+
+            # Execute every requested tool and collect the results
+            tool_results = []
+            for block in tool_use_blocks:
+                fn = TOOL_DISPATCH.get(block.name)
+                try:
+                    result = fn(**block.input) if fn else None
+                except Exception as e:  # noqa: BLE001
+                    result = {"error": str(e)}
+                result_json = json.dumps(result, default=str)
+
+                tool_calls_log.append(
+                    AgentToolCall(
+                        tool_name=block.name,
+                        inputs=dict(block.input),
+                        output=result_json,
+                    )
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": result_json,
+                    }
+                )
+
+            # Send the tool results back so Claude can continue reasoning
+            messages.append({"role": "user", "content": tool_results})
+            continue
+
+        # No tool use -> Claude gave a text answer. Parse it and stop.
+        text = "".join(b.text for b in response.content if b.type == "text")
+        try:
+            final = _extract_final_answer(text)
+        except Exception:  # noqa: BLE001
+            final = {"target_field": None, "confidence": 0.30,
+                     "reasoning": "Could not parse agent answer; routed to extended_attributes."}
+        break
+
+    if final is None:
+        final = {"target_field": None, "confidence": 0.30,
+                 "reasoning": "Agent did not produce a final answer within tool budget."}
+
+    # Normalize target ("null"/"" -> None)
+    target = final.get("target_field")
+    if target in ("", "null", "None", "extended_attributes"):
+        target = None
+    confidence = float(final.get("confidence", 0.40))
+    reasoning = final.get("reasoning", "")
+
+    # Generate SQL for the chosen mapping (passthrough if no target)
+    if target:
+        sql = TOOL_DISPATCH["generate_sql"](col.name, target)
+    else:
+        sql = col.name
+
+    mapping = ColumnMapping(
+        source_column=col.name,
+        source_table=source_table,
+        target_field=target,
+        confidence=round(confidence, 4),
+        method="llm",
+        sql_expression=sql,
+        notes=reasoning,
+    )
+
+    trace = AgentTrace(
+        column_name=col.name,
+        agent="mapping",
+        tool_calls=tool_calls_log,
+        final_target=target,
+        final_confidence=round(confidence, 4),
+        reasoning_summary=reasoning,
+    )
+
+    return mapping, trace
+
+
+async def _run_async(
+    columns: list[ColumnProfile],
+    source_table: str,
+    concurrency: int,
+) -> list[tuple[ColumnMapping, AgentTrace]]:
+    """Run all columns concurrently, capped at `concurrency` in flight."""
+    import anthropic
+
+    client = anthropic.Anthropic()
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _guarded(col: ColumnProfile):
+        async with semaphore:
+            return await _map_one_column(client, col, source_table)
+
+    return await asyncio.gather(*[_guarded(c) for c in columns])
+
+
+def run_mapping_agent(
+    columns: list[ColumnProfile],
+    source_table: str,
+    all_profiles: list[ColumnProfile],
+    is_empty_string_null: bool = True,
+    concurrency: int = DEFAULT_CONCURRENCY,
+) -> tuple[list[ColumnMapping], list[AgentTrace]]:
+    """Public entry point. Map a list of low-confidence columns via the agent loop.
+
+    Args:
+        columns:             the low-confidence columns to map.
+        source_table:        table name for the ColumnMapping records.
+        all_profiles:        ALL columns in the table (registered for tool lookups).
+        is_empty_string_null: PAS-L style empty-string nulls.
+        concurrency:         max columns processed in parallel.
+
+    Returns:
+        (mappings, traces) — parallel lists.
+    """
+    # Register profiles so get_column_profile / generate_sql tools can see them
+    register_profiles(all_profiles, is_empty_string_null)
+
+    # asyncio.run() crashes if an event loop is already running (Jupyter, async
+    # CI runners). Detect that case and fall back to nest_asyncio.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        results = asyncio.run(_run_async(columns, source_table, concurrency))
+    else:
+        import nest_asyncio
+        nest_asyncio.apply()
+        results = loop.run_until_complete(
+            _run_async(columns, source_table, concurrency)
+        )
+    mappings = [m for m, _ in results]
+    traces = [t for _, t in results]
+    return mappings, traces

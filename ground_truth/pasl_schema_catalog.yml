@@ -132,7 +132,7 @@ columns:
     canonical_target: null
     confidence_floor: null
     transformation: "d.ins_zip"
-    is_hard: false
+    is_hard: true
     notes: "Insured ZIP code (PII). Extended_attributes only."
 
   INS_SSN_LAST4:
