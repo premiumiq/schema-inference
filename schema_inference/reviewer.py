@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -324,6 +325,56 @@ def _phase_extended_attrs(
     return kept
 
 
+# ─── Metamodel wiring (MAP-1) ──────────────────────────────────────────────────
+
+def _record_review_to_metamodel(
+    proposal: MappingProposal,
+    approved: list[ApprovedMapping],
+) -> None:
+    """Best-effort: persist reviewer actions to the metamodel store.
+
+    Human review outcomes (accepted/modified/skipped, and which mappings were
+    auto-approved without a prompt) are the feedback signal MAP-4's few-shot
+    bank depends on. Uses proposal.run_id to update the matching
+    mapping_history rows the orchestrator already wrote (agent pipeline
+    runs); falls back to inserting fresh rows under a synthetic run_id when
+    reviewing a legacy proposal that has no run_id (rule+LLM path, or a JSON
+    file loaded from disk after the fact).
+
+    Never raises — history is optional and must not block the review CLI.
+    """
+    try:
+        from .metamodel.store import open_store
+    except ImportError:
+        return
+
+    store = open_store()
+    if not store:
+        return
+    try:
+        fallback_run_id = proposal.run_id or f"review-{uuid.uuid4()}"
+        for a in approved:
+            updated = 0
+            if proposal.run_id:
+                updated = store.update_mapping_review(
+                    proposal.run_id, a.source_column, a.reviewer_action
+                )
+            if not updated:
+                store.record_mapping(
+                    run_id=fallback_run_id,
+                    source_name=proposal.source_name,
+                    table_name=proposal.table_name,
+                    source_column=a.source_column,
+                    target_field=a.target_field,
+                    confidence=a.confidence,
+                    method=a.method,
+                    sql_expression=a.sql_expression,
+                    reviewer_action=a.reviewer_action,
+                )
+    finally:
+        store.close()
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def review_proposal(
@@ -371,6 +422,9 @@ def review_proposal(
 
     # Phase 5: extended_attributes confirmation
     extended = _phase_extended_attrs(list(dict.fromkeys(extended)))  # deduplicate, preserve order
+
+    # MAP-1: persist reviewer actions (feedback signal for MAP-4's few-shot bank)
+    _record_review_to_metamodel(proposal, approved)
 
     # Show metadata columns excluded
     if proposal.excluded_metadata_columns:

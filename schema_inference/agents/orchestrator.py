@@ -183,13 +183,35 @@ def run_mapping(
         unmapped_columns=unmapped,
         missing_standard_fields=missing,
         excluded_metadata_columns=excluded_metadata,
+        run_id=run_id,
     )
+
+    # ── MAP-1: persist every mapping decision to the metamodel store ─────────
+    # Best-effort: open_store() returns None on any failure, never raises —
+    # history must never block the mapping pipeline.
+    from ..metamodel.store import open_store
+    store = open_store()
+    if store:
+        try:
+            for m in final_mappings:
+                store.record_mapping(
+                    run_id=run_id,
+                    source_name=source_name,
+                    table_name=table.name,
+                    source_column=m.source_column,
+                    target_field=m.target_field,
+                    confidence=m.confidence,
+                    method=m.method,
+                    sql_expression=m.sql_expression,
+                )
+        finally:
+            store.close()
 
     # ── Step 5: EvaluatorAgent (demo/CI only) ────────────────────────────────
     eval_score = None
     if eval_mode:
         from .evaluator_agent import run_evaluator
-        eval_score = run_evaluator(proposal)
+        eval_score = run_evaluator(proposal, run_id=run_id)
     duration = time.perf_counter() - t0
 
     return AgentMappingRun(

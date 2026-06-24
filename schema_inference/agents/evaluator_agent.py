@@ -31,8 +31,15 @@ def _load_scorer():
     return module
 
 
-def run_evaluator(proposal: MappingProposal) -> dict | None:
-    """Score the proposal against the PAS-L ground truth. Returns metrics as a dict.
+def run_evaluator(proposal: MappingProposal, run_id: str | None = None) -> dict | None:
+    """Score the proposal against its source's ground truth. Returns metrics as a dict.
+
+    Args:
+        proposal: the final MappingProposal to score.
+        run_id:   if given, forwarded to score_mappings.score() so verdicts
+                  and the loss_runs row land in the metamodel store (MAP-1)
+                  under the same run_id the orchestrator already recorded
+                  mappings under.
 
     Returns None if the scorer or catalog is unavailable.
     """
@@ -51,8 +58,10 @@ def run_evaluator(proposal: MappingProposal) -> dict | None:
 
         metrics = scorer.score(
             proposal_path=Path(tmp.name),
+            source_name=proposal.source_name,
             quiet=True,
             use_color=False,
+            run_id=run_id,
         )
         # AggregateMetrics is a NamedTuple -> convert to dict
         return metrics._asdict()

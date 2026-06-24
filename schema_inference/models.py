@@ -61,6 +61,7 @@ class MappingProposal(BaseModel):
     unmapped_columns: list[str]             # routed to extended_attributes
     missing_standard_fields: list[str]      # slv_policy fields with no source match
     excluded_metadata_columns: list[str]    # _CDC_* columns excluded from mapping
+    run_id: str | None = None               # links back to AgentMappingRun / metamodel (MAP-1); None for legacy rule+LLM path
 
 
 # ─── Reviewer output ─────────────────────────────────────────────────────────
