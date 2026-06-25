@@ -57,6 +57,23 @@ Respond with ONLY a JSON object in this exact form:
 }"""
 
 
+def _active_system_prompt() -> str:
+    """MAP-4 Layer 2: the metamodel's most recently human-accepted prompt for
+    'critic', if any; else the hardcoded _SYSTEM_PROMPT above. Same pattern as
+    mapping_agent.py's _active_system_prompt() / mapper.py's _rule_weights()."""
+    try:
+        from ..metamodel.store import open_store
+    except ImportError:
+        return _SYSTEM_PROMPT
+    store = open_store()
+    if not store:
+        return _SYSTEM_PROMPT
+    try:
+        return store.get_active_prompt("critic") or _SYSTEM_PROMPT
+    finally:
+        store.close()
+
+
 def _load_catalog_notes() -> dict:
     """Load the schema catalog but expose ONLY the notes + is_hard + confidence_floor.
     Never expose canonical_target (the answer)."""
@@ -94,6 +111,7 @@ def run_critic_agent(
     mappings: list[ColumnMapping],
     profiles_by_name: dict,
     source_name: str = "pasl",
+    system_prompt_override: str | None = None,
 ) -> tuple[list[ColumnMapping], list[AgentTrace], int]:
     """Adversarially review hard/below-floor mappings. Returns (updated_mappings, traces, override_count).
 
@@ -102,11 +120,16 @@ def run_critic_agent(
         profiles_by_name:   {column_name: ColumnProfile} for context.
         source_name:        logical source name — used to retrieve the
                             relevant few-shot example bank (MAP-4 Layer 1).
+        system_prompt_override: MAP-4 Layer 2 — see mapping_agent.py's param
+                            of the same name. Only the tuning script's
+                            VALIDATE step should pass this.
 
     Returns:
         (updated_mappings, traces, override_count)
     """
     import anthropic
+
+    system_prompt = system_prompt_override or _active_system_prompt()
 
     catalog_notes = _load_catalog_notes()
     targets = _select_targets(mappings, catalog_notes)
@@ -145,7 +168,7 @@ def run_critic_agent(
     response = client.messages.create(
         model=MODEL,
         max_tokens=2048,
-        system=_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
 

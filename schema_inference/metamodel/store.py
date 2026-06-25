@@ -29,8 +29,11 @@ Public API:
         .record_loss_run(run_id, source_name, table_name, metrics, config_snapshot) -> str
         .get_loss_runs(source_name, limit=50) -> list[dict]
         .record_prompt_version(agent_name, prompt_text, parent_version_id=None,
-                                loss_before=None, loss_after=None, accepted=False) -> str
+                                loss_before=None, loss_after=None, diagnosis=None,
+                                accepted=False) -> str
         .get_prompt_versions(agent_name, accepted_only=False) -> list[dict]
+        .accept_prompt_version(version_id) -> int                                  (MAP-4 Layer 2 — human merge)
+        .get_active_prompt(agent_name) -> str | None                               (MAP-4 Layer 2)
         .add_few_shot_example(source_name, source_column, target_field, sql_expression,
                               reasoning, profile_signature, origin) -> str          (MAP-4 Layer 1)
         .get_few_shot_examples(source_name, status="active") -> list[dict]         (MAP-4 Layer 1)
@@ -140,7 +143,9 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     parent_version_id  TEXT,
     loss_before        REAL,
     loss_after         REAL,
+    diagnosis          TEXT,
     accepted           INTEGER NOT NULL DEFAULT 0,
+    accepted_at        TEXT,
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pv_agent ON prompt_versions(agent_name, accepted);
@@ -169,6 +174,8 @@ class MetamodelStore:
         for ddl in (
             "ALTER TABLE mapping_history ADD COLUMN notes TEXT",
             "ALTER TABLE mapping_history ADD COLUMN profile_signature_json TEXT",
+            "ALTER TABLE prompt_versions ADD COLUMN diagnosis TEXT",
+            "ALTER TABLE prompt_versions ADD COLUMN accepted_at TEXT",
         ):
             try:
                 self._conn.execute(ddl)
@@ -318,19 +325,24 @@ class MetamodelStore:
         parent_version_id: str | None = None,
         loss_before:       float | None = None,
         loss_after:        float | None = None,
+        diagnosis:         str | None = None,
         accepted:          bool = False,
     ) -> str:
+        """Logs a tuning-round candidate. accepted defaults False — MAP-4 Layer 2's
+        guardrail is that the tuning loop itself never sets accepted=True; only
+        accept_prompt_version() (an explicit human action via tools/tune_prompts.py
+        --accept) does. This call just appends to the audit trail."""
         version_id = _uid()
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO prompt_versions
                     (version_id, agent_name, prompt_text, parent_version_id,
-                     loss_before, loss_after, accepted, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     loss_before, loss_after, diagnosis, accepted, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (version_id, agent_name, prompt_text, parent_version_id,
-                 loss_before, loss_after, int(accepted), _now()),
+                 loss_before, loss_after, diagnosis, int(accepted), _now()),
             )
             self._conn.commit()
         return version_id
@@ -344,6 +356,35 @@ class MetamodelStore:
         with self._lock:
             cur = self._conn.execute(query, params)
             return _rows(cur)
+
+    def accept_prompt_version(self, version_id: str) -> int:
+        """The human-merge action: marks a candidate as the active prompt for its
+        agent. Append-only — never unsets a prior accepted row, so rollback is
+        just re-accepting an older version_id (get_active_prompt picks whichever
+        accepted row has the latest accepted_at, not the latest created_at)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE prompt_versions SET accepted = 1, accepted_at = ? WHERE version_id = ?",
+                (_now(), version_id),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
+    def get_active_prompt(self, agent_name: str) -> str | None:
+        """The prompt text of the most recently ACCEPTED version for this agent
+        (ordered by accepted_at, not created_at — so rollback-by-re-accepting an
+        older version_id works correctly). None if nothing has ever been accepted."""
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT prompt_text FROM prompt_versions
+                WHERE agent_name = ? AND accepted = 1 AND accepted_at IS NOT NULL
+                ORDER BY accepted_at DESC LIMIT 1
+                """,
+                (agent_name,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
 
     # ── few_shot_examples (MAP-4 Layer 1) ─────────────────────────────────────
 

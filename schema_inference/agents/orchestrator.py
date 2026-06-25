@@ -71,6 +71,9 @@ def run_mapping(
     use_agent: bool = True,
     concurrency: int = 10,
     eval_mode: bool = False,
+    mapping_system_prompt: str | None = None,
+    critic_system_prompt: str | None = None,
+    record_to_metamodel: bool = True,
 ) -> AgentMappingRun:
     """Run the agent mapping pipeline for one table.
 
@@ -86,6 +89,17 @@ def run_mapping(
         use_agent:      If False, skip the agent pass (rule-only — useful for the
                         "before" half of the demo comparison).
         concurrency:    Max columns processed in parallel by the agent.
+        mapping_system_prompt: MAP-4 Layer 2 — override the MappingAgent's
+                        system prompt for this run only (bypasses the
+                        active/accepted lookup). Only tools/tune_prompts.py's
+                        VALIDATE step should set this; leave None otherwise.
+        critic_system_prompt:  Same, for the CriticAgent.
+        record_to_metamodel: False skips writing mapping_history rows for
+                        this run. MAP-4 Layer 2's VALIDATE step sets this —
+                        a tuning trial against an unaccepted candidate prompt
+                        is not a real mapping decision and must not pollute
+                        the few-shot bank (MAP-4 Layer 1 scans mapping_history
+                        for curation candidates).
 
     Returns:
         AgentMappingRun with the final proposal and all agent traces.
@@ -135,6 +149,7 @@ def run_mapping(
             all_profiles=business_cols,
             is_empty_string_null=table.is_empty_string_null,
             concurrency=concurrency,
+            system_prompt_override=mapping_system_prompt,
         )
         for m in agent_mappings:
             agent_results[m.source_column] = m
@@ -157,7 +172,8 @@ def run_mapping(
     if use_agent:
         from .critic_agent import run_critic_agent
         merged, critic_traces, critic_overrides = run_critic_agent(
-            merged, profiles_by_name, source_name=source_name
+            merged, profiles_by_name, source_name=source_name,
+            system_prompt_override=critic_system_prompt,
         )
         traces.extend(critic_traces)
 
@@ -199,10 +215,11 @@ def run_mapping(
 
     # ── MAP-1: persist every mapping decision to the metamodel store ─────────
     # Best-effort: open_store() returns None on any failure, never raises —
-    # history must never block the mapping pipeline.
+    # history must never block the mapping pipeline. Skipped entirely when
+    # record_to_metamodel=False (MAP-4 Layer 2 tuning trials).
     from ..metamodel.few_shot import build_profile_signature
     from ..metamodel.store import open_store
-    store = open_store()
+    store = open_store() if record_to_metamodel else None
     if store:
         try:
             for m in final_mappings:

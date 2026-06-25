@@ -498,7 +498,9 @@ def score(
     use_color: bool = True,
     csv_path: Path | None = None,
     run_id: str | None = None,
-) -> AggregateMetrics:
+    columns_subset: set[str] | None = None,
+    return_scores: bool = False,
+) -> AggregateMetrics | tuple[AggregateMetrics, list[ColumnScore]]:
     """Score a MappingProposal JSON against ground truth.
 
     Args:
@@ -517,6 +519,16 @@ def score(
                               loss_runs row are recorded to the metamodel
                               store (MAP-1) under this run_id. No-op if the
                               store can't be opened.
+        columns_subset:       If given, score only these catalog column
+                              names — everything else is excluded entirely
+                              (not counted as TN). MAP-4 Layer 2's VALIDATE
+                              step uses this to score the holdout split only,
+                              keeping train-split columns out of the loss
+                              used to accept/reject a prompt candidate.
+        return_scores:        If True, return (metrics, scores) instead of
+                              just metrics — MAP-4 Layer 2's DIAGNOSE step
+                              needs the raw per-column ColumnScore list, not
+                              just the aggregate.
     """
     resolved_source = source_name or DEFAULT_SOURCE_NAME
     if catalog_path is None:
@@ -531,6 +543,9 @@ def score(
     gt_columns:    dict[str, dict] = catalog.get("columns", {})
     gt_missing:    list[dict]      = catalog.get("missing_standard_fields", [])
     value_columns: dict[str, dict] = value_catalog.get("columns", {})
+
+    if columns_subset is not None:
+        gt_columns = {k: v for k, v in gt_columns.items() if k in columns_subset}
 
     # Build mapper lookup: source_column → (target_field, confidence, sql_expression)
     mapper_map: dict[str, tuple[str | None, float, str]] = {}
@@ -573,6 +588,8 @@ def score(
             metrics=metrics,
         )
 
+    if return_scores:
+        return metrics, scores
     return metrics
 
 

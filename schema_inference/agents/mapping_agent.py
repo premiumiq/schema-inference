@@ -56,6 +56,27 @@ When you have gathered enough information, respond with your FINAL ANSWER as a J
   "reasoning": "<one or two sentences explaining the decision>"
 }"""
 
+
+def _active_system_prompt() -> str:
+    """MAP-4 Layer 2: the metamodel's most recently human-accepted prompt for
+    'mapping', if any; else the hardcoded _SYSTEM_PROMPT above. Mirrors
+    mapper.py's _rule_weights() pattern (Layer 0) — config/metamodel-driven
+    override with a code-level fallback, so accepting a tuned prompt via
+    tools/tune_prompts.py --accept takes effect on production runs with zero
+    other code changes."""
+    try:
+        from ..metamodel.store import open_store
+    except ImportError:
+        return _SYSTEM_PROMPT
+    store = open_store()
+    if not store:
+        return _SYSTEM_PROMPT
+    try:
+        return store.get_active_prompt("mapping") or _SYSTEM_PROMPT
+    finally:
+        store.close()
+
+
 async def _call_with_retry(client, kwargs, max_retries: int = 6):
     """Call the Anthropic API, retrying with exponential backoff on rate limits."""
     import anthropic
@@ -130,6 +151,7 @@ async def _map_one_column(
     col: ColumnProfile,
     source_table: str,
     source_name: str,
+    system_prompt: str,
 ) -> tuple[ColumnMapping, AgentTrace]:
     """Run the tool-use loop for a single column. Returns (mapping, trace)."""
 
@@ -145,7 +167,7 @@ async def _map_one_column(
         kwargs = dict(
             model=MODEL,
             max_tokens=1024,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt,
             messages=messages,
         )
         if use_tools:
@@ -244,6 +266,7 @@ async def _run_async(
     source_table: str,
     source_name: str,
     concurrency: int,
+    system_prompt: str,
 ) -> list[tuple[ColumnMapping, AgentTrace]]:
     """Run all columns concurrently, capped at `concurrency` in flight."""
     import anthropic
@@ -253,7 +276,7 @@ async def _run_async(
 
     async def _guarded(col: ColumnProfile):
         async with semaphore:
-            return await _map_one_column(client, col, source_table, source_name)
+            return await _map_one_column(client, col, source_table, source_name, system_prompt)
 
     return await asyncio.gather(*[_guarded(c) for c in columns])
 
@@ -265,6 +288,7 @@ def run_mapping_agent(
     all_profiles: list[ColumnProfile],
     is_empty_string_null: bool = True,
     concurrency: int = DEFAULT_CONCURRENCY,
+    system_prompt_override: str | None = None,
 ) -> tuple[list[ColumnMapping], list[AgentTrace]]:
     """Public entry point. Map a list of low-confidence columns via the agent loop.
 
@@ -276,24 +300,30 @@ def run_mapping_agent(
         all_profiles:        ALL columns in the table (registered for tool lookups).
         is_empty_string_null: PAS-L style empty-string nulls.
         concurrency:         max columns processed in parallel.
+        system_prompt_override: MAP-4 Layer 2 — use this exact prompt text
+                              instead of resolving the active/default one.
+                              Only tools/tune_prompts.py's VALIDATE step
+                              should pass this (scoring a not-yet-accepted
+                              candidate); production callers leave it None.
 
     Returns:
         (mappings, traces) — parallel lists.
     """
     # Register profiles so get_column_profile / generate_sql tools can see them
     register_profiles(all_profiles, is_empty_string_null)
+    system_prompt = system_prompt_override or _active_system_prompt()
 
     # asyncio.run() crashes if an event loop is already running (Jupyter, async
     # CI runners). Detect that case and fall back to nest_asyncio.
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        results = asyncio.run(_run_async(columns, source_table, source_name, concurrency))
+        results = asyncio.run(_run_async(columns, source_table, source_name, concurrency, system_prompt))
     else:
         import nest_asyncio
         nest_asyncio.apply()
         results = loop.run_until_complete(
-            _run_async(columns, source_table, source_name, concurrency)
+            _run_async(columns, source_table, source_name, concurrency, system_prompt)
         )
     mappings = [m for m, _ in results]
     traces = [t for _, t in results]
