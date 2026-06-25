@@ -146,6 +146,20 @@ the loss was) and MAP-2 (loss function — needs the thing to minimize).
 This backlog entry exists to track build status; the design doc holds the
 actual plan, layered-tuning-stack design, and rollout phases.
 
+**Build status:**
+- Layer 0 (numeric rule-weight tuning) — done. `tools/tune_rule_weights.py`.
+- Layer 1 (few-shot example bank) — done. `tools/curate_few_shot_bank.py`,
+  `schema_inference/metamodel/few_shot.py`.
+- Layer 2 (textual prompt tuning) — done. `tools/tune_prompts.py`. Mechanics
+  verified with an injected fake LLM client (no `ANTHROPIC_API_KEY` in this
+  environment) — live diagnose/propose/validate quality is unverified until
+  run against a real key.
+- Layer 3 (learned critic trigger) — **deferred, not started.** The plan
+  gates this on 3+ sources of real cross-source volume; we have one (PAS-L,
+  46 columns). Revisit once a second/third client source has accumulated
+  `mapping_history` — fitting a classifier on PAS-L alone would overfit
+  trivially. Decided 2026-06-25.
+
 ---
 
 ## Phase D — Row-level transforms (independent track)
