@@ -15,8 +15,11 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from rapidfuzz import fuzz
 
 from .canonical.policy import CANONICAL_BY_NAME, CANONICAL_FIELDS, CANONICAL_NAMES
@@ -40,6 +43,32 @@ _PREFIX_RE = re.compile(r"^([A-Z]{2,5})-")
 
 LLM_BATCH_SIZE = 20
 DEFAULT_LLM_THRESHOLD = 0.70
+
+# Rule-engine confidence weights (name_sim, type_compat, pattern_bonus).
+# MAP-4 Layer 0 (tools/tune_rule_weights.py) grid-searches these against
+# ground truth and writes the winner into agent_config.yml's rule_engine.weights
+# section. _rule_weights() picks up that override; the hardcoded tuple below
+# is only the fallback when no config override exists.
+_DEFAULT_RULE_WEIGHTS = (0.65, 0.25, 0.10)  # name_sim, type_compat, pattern_bonus
+_AGENT_CONFIG_PATH = Path(__file__).parent / "agent_config.yml"
+
+
+@lru_cache(maxsize=1)
+def _rule_weights() -> tuple[float, float, float]:
+    """(name_sim, type_compat, pattern_bonus) weights, from agent_config.yml's
+    rule_engine.weights section if present, else the original hardcoded
+    defaults. Cached per-process — a tuner script that writes a new weights
+    section takes effect on the next process invocation, not within one."""
+    if _AGENT_CONFIG_PATH.exists():
+        try:
+            with open(_AGENT_CONFIG_PATH, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            w = (cfg.get("rule_engine") or {}).get("weights")
+            if w and all(k in w for k in ("name_sim", "type_compat", "pattern_bonus")):
+                return (float(w["name_sim"]), float(w["type_compat"]), float(w["pattern_bonus"]))
+        except (yaml.YAMLError, OSError, ValueError, TypeError):
+            pass
+    return _DEFAULT_RULE_WEIGHTS
 
 _SYSTEM_PROMPT = """You are an insurance data engineering assistant specializing in mapping \
 source system columns to a canonical insurance policy schema.
@@ -115,9 +144,16 @@ def _pattern_bonus(source_col: str, field: "CanonicalField") -> float:
 
 
 def _compute_confidence(
-    name_sim: float, type_compat: float, pat_bonus: float
+    name_sim: float,
+    type_compat: float,
+    pat_bonus: float,
+    weights: tuple[float, float, float] | None = None,
 ) -> float:
-    return min(1.0, 0.65 * name_sim + 0.25 * type_compat + 0.10 * pat_bonus)
+    """weights=None uses the configured/default weights (_rule_weights()).
+    Tuning code passes an explicit weights tuple to score a candidate
+    without touching agent_config.yml or the cached default."""
+    w1, w2, w3 = weights if weights is not None else _rule_weights()
+    return min(1.0, w1 * name_sim + w2 * type_compat + w3 * pat_bonus)
 
 
 def _detect_prefix(sample_values: list[str]) -> str | None:
@@ -198,9 +234,17 @@ def _generate_sql(
 # ─── Rule-based pass ──────────────────────────────────────────────────────────
 
 def _rule_map_column(
-    col: ColumnProfile, is_empty_string_null: bool
+    col: ColumnProfile,
+    is_empty_string_null: bool,
+    weights: tuple[float, float, float] | None = None,
 ) -> ColumnMapping:
-    """Find the best canonical field match for a single column."""
+    """Find the best canonical field match for a single column.
+
+    weights=None uses the configured/default rule-engine weights. Passing an
+    explicit tuple (tools/tune_rule_weights.py) re-scores every candidate
+    canonical field under that tuple — necessary because changing the
+    weights can change which field wins, not just the winning score.
+    """
     best_field: "CanonicalField | None" = None
     best_conf = 0.0
     best_nsim = 0.0
@@ -211,7 +255,7 @@ def _rule_map_column(
         nsim = _name_similarity(col.name, field)
         tcomp = _type_compatibility(col.inferred_type, field.target_type, col)
         pat = _pattern_bonus(col.name, field)
-        conf = _compute_confidence(nsim, tcomp, pat)
+        conf = _compute_confidence(nsim, tcomp, pat, weights=weights)
 
         if conf > best_conf:
             best_conf = conf

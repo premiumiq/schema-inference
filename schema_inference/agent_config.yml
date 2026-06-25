@@ -1,6 +1,18 @@
 ﻿# Agent workflow configuration for the schema inference mapper.
 # Consumed by the orchestrator to set model names, thresholds, and concurrency.
 
+# Rule-engine confidence weights — name_sim, type_compat, pattern_bonus must
+# sum to 1.0. These are the values mapper.py's _compute_confidence() reads by
+# default (mapper.py:_DEFAULT_RULE_WEIGHTS is the fallback if this section is
+# ever removed). MAP-4 Layer 0 (tools/tune_rule_weights.py --apply) overwrites
+# this section after a grid search against ground truth — see the before/after
+# loss it prints, and the matching loss_runs row in the metamodel store.
+rule_engine:
+  weights:
+    name_sim: 0.1500
+    type_compat: 0.2000
+    pattern_bonus: 0.6500
+
 mapping_agent:
   model: claude-haiku-4-5-20251001
   llm_threshold: 0.70          # rule-confidence below this routes to the agent

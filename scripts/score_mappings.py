@@ -43,6 +43,16 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# Windows consoles default to cp1252, which can't encode the box-drawing and
+# checkmark characters used in the report output below. reconfigure() is a
+# no-op failure (not a crash) when stdout isn't a real stream (e.g. piped
+# into something that already set its own encoding) — guard and ignore.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # ── Ground truth loaders ──────────────────────────────────────────────────────
 
 GROUND_TRUTH_DIR = _REPO_ROOT / "ground_truth"

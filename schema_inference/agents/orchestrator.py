@@ -67,7 +67,7 @@ def load_agent_config() -> dict:
 def run_mapping(
     table: TableProfile,
     source_name: str,
-    llm_threshold: float = DEFAULT_LLM_THRESHOLD,
+    llm_threshold: float | None = None,
     use_agent: bool = True,
     concurrency: int = 10,
     eval_mode: bool = False,
@@ -78,6 +78,11 @@ def run_mapping(
         table:          TableProfile from the profiler.
         source_name:    Logical source name (for the proposal header).
         llm_threshold:  Columns with rule confidence < this go to the MappingAgent.
+                        None (default) reads agent_config.yml's
+                        mapping_agent.llm_threshold, falling back to
+                        DEFAULT_LLM_THRESHOLD if absent — so tuning that
+                        value (MAP-4 Layer 0) actually changes pipeline
+                        behavior without every caller needing to thread it.
         use_agent:      If False, skip the agent pass (rule-only — useful for the
                         "before" half of the demo comparison).
         concurrency:    Max columns processed in parallel by the agent.
@@ -88,6 +93,11 @@ def run_mapping(
     run_id = str(uuid.uuid4())
     started_at = datetime.now()
     t0 = time.perf_counter()
+
+    if llm_threshold is None:
+        llm_threshold = (
+            load_agent_config().get("mapping_agent", {}).get("llm_threshold", DEFAULT_LLM_THRESHOLD)
+        )
 
     # ── Split off CDC metadata columns (never mapped) ────────────────────────
     business_cols = []
