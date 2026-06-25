@@ -154,11 +154,24 @@ actual plan, layered-tuning-stack design, and rollout phases.
   verified with an injected fake LLM client (no `ANTHROPIC_API_KEY` in this
   environment) — live diagnose/propose/validate quality is unverified until
   run against a real key.
-- Layer 3 (learned critic trigger) — **deferred, not started.** The plan
-  gates this on 3+ sources of real cross-source volume; we have one (PAS-L,
-  46 columns). Revisit once a second/third client source has accumulated
-  `mapping_history` — fitting a classifier on PAS-L alone would overfit
-  trivially. Decided 2026-06-25.
+- Layer 3 (learned critic trigger) — **still deferred, but the gate moved.**
+  A second source's ground truth now exists —
+  `ground_truth/pasm_schema_catalog.yml`/`pasm_value_catalog.json`
+  (`pasm_policy`, 23 columns, deliberately including cases PAS-L can't test:
+  decimal-dollar premiums vs PAS-L's integer-cents, a column with no
+  dedicated product_code field at all, a boolean encoded as `true`/`false`
+  strings instead of `Y`/`N`). Confirmed real, non-trivial headroom:
+  PAS-L-tuned rule weights transfer at only 76.5% F1 on PAS-M; full Layer 0
+  re-tuning improves to 88.2% F1 but hard-column F1 caps at 66.7% — the rule
+  engine genuinely cannot resolve `line_of_business`'s dual-target case or
+  `insured_ein`'s customer_id trap alone, leaving real work for
+  MappingAgent/CriticAgent. Layer 3 itself still needs accumulated real
+  `mapping_history` volume across both sources (not just the catalogs
+  existing) before fitting a classifier is worth it — revisit once that
+  volume exists. Found in passing: `agent_config.yml`'s `rule_engine.weights`
+  is a single global section, not per-source — applying Layer 0 for `pasm`
+  would clobber PAS-L's tuned weights; needs a per-source weights section
+  before both can be tuned independently. Updated 2026-06-25.
 
 ---
 

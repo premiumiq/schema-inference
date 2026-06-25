@@ -125,7 +125,6 @@ def _cmd_map(args: argparse.Namespace) -> None:
 
 def _cmd_review(args: argparse.Namespace) -> None:
     from .models import MappingProposal
-    from .reviewer import review_proposal
 
     proposal_path = Path(args.proposal)
     if not proposal_path.exists():
@@ -135,7 +134,18 @@ def _cmd_review(args: argparse.Namespace) -> None:
         proposal_path.read_text(encoding="utf-8")
     )
     output_path = Path(args.output) if args.output else None
-    review_proposal(proposal, output_path=output_path)
+
+    if args.auto:
+        from .reviewer import auto_review_proposal
+        definition = auto_review_proposal(
+            proposal, accept_threshold=args.accept_threshold, output_path=output_path,
+        )
+        accepted = sum(1 for a in definition.approved_mappings if a.reviewer_action == "accepted")
+        print(f"Auto-reviewed (non-interactive, threshold={args.accept_threshold}): "
+              f"{accepted} accepted | {len(definition.approved_mappings) - accepted} skipped")
+    else:
+        from .reviewer import review_proposal
+        review_proposal(proposal, output_path=output_path)
 
 
 def _cmd_infer(args: argparse.Namespace) -> None:
@@ -284,6 +294,11 @@ def main() -> None:
     p_review = sub.add_parser("review", help="Interactively review a MappingProposal → MappingDefinition JSON")
     p_review.add_argument("proposal", help="MappingProposal JSON file")
     p_review.add_argument("--output", default=None, help="Output JSON path (default: mappings/{source}_{table}_mapping.json)")
+    p_review.add_argument("--auto", action="store_true",
+                           help="Non-interactive: accept/skip by confidence threshold instead of prompting. "
+                                "Test-fixture generation only — not a substitute for real review.")
+    p_review.add_argument("--accept-threshold", type=float, default=0.70, dest="accept_threshold",
+                           help="With --auto: confidence at or above this is accepted, below is skipped (default: 0.70)")
 
     # ── infer (full pipeline) ──
     p_infer = sub.add_parser("infer", help="Full pipeline: profile → map → review")

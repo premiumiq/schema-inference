@@ -78,6 +78,7 @@ import score_mappings as scorer
 GROUND_TRUTH_DIR = _REPO_ROOT / "ground_truth"
 DEFAULT_DATA_FILE = {
     "pasl": _REPO_ROOT / "schema_inference" / "test_data" / "pasl_policy.dat",
+    "pasm": _REPO_ROOT / "schema_inference" / "test_data" / "pasm_policy.dat",
 }
 
 # Diff-size guardrail: candidate must differ from current (ratio <= MAX) but

@@ -1,0 +1,271 @@
+# Ground truth schema catalog for pasm_policy
+# Used by scripts/score_mappings.py to evaluate schema inference mapping quality.
+#
+# Scoped to pasm_policy only (PAS-M's policy header), matching the precedent set by
+# pasl_schema_catalog.yml — one representative central table, not every normalized
+# PAS-M table (pasm_coverage/pasm_premium_register/pasm_transaction_log/pasm_risk_object
+# would introduce cross-table column-name collisions, e.g. effective_date means something
+# different per table, if combined into one flat catalog).
+#
+# Design goal distinct from PAS-L's catalog: PAS-L's rule-engine weights saturated to
+# 100% F1 almost immediately once tuned (MAP-4 Layer 0), leaving no real headroom to test
+# the self-tuning loop against. This catalog deliberately includes hard cases that are
+# either absent from PAS-L entirely (so an agent over-fit to PAS-L's column set has no
+# shortcut) or are the OPPOSITE of a PAS-L pattern the agent may have over-generalized
+# (most importantly: PAS-M premiums are already decimal dollars, not integer cents — an
+# agent that learned "premiums need /100" from PAS-L would get this wrong on PAS-M).
+#
+# canonical_target: the correct slv_policy field name, or null (→ extended_attributes)
+# secondary_target: alternate canonical field derivable from the same source column
+# confidence_floor: minimum confidence the mapper should produce for an easy win
+# transformation: the SQL expression used in stg_pasm_policy.sql (ground truth SQL)
+# is_hard: true when the correct mapping requires domain knowledge or non-obvious transformation
+# notes: explanation of the mapping decision for reviewer display
+
+version: 1
+source: pasm
+table: pasm_policy
+description: >
+  Commercial lines modern cloud PAS policy header. Lowercase verbose column names,
+  ISO 8601 dates, decimal-dollar amounts (NOT integer cents — contrast with PAS-L),
+  PCM-prefixed policy IDs. Full CDC (_cdc_timestamp / _cdc_operation, excluded from
+  mapping like all _CDC_* columns). One row per policy; no endorsement-chain or
+  positional-coverage quirks like PAS-L — coverage detail lives in pasm_coverage,
+  out of scope for this catalog.
+
+# Canonical fields expected to be MISSING (no source column covers them)
+missing_standard_fields:
+  - name: customer_id
+    reason: >
+      PAS-M has no customer FK on the policy header, same gap as PAS-L. Insured is
+      identified only by insured_name + insured_ein. Customer matching is out of scope here.
+  - name: agent_id
+    reason: >
+      agency_code carries a string agency identifier, not a numeric agent ID. There is
+      no agent-level identifier in this table (same situation as PAS-L's WRTG_AGT/AGCY_CD).
+
+columns:
+
+  policy_id:
+    canonical_target: policy_id
+    confidence_floor: 0.85
+    transformation: "CAST(REPLACE(d.policy_id, 'PCM-', '') AS INTEGER)"
+    is_hard: false
+    notes: >
+      PCM-prefixed string ID. Column name matches the canonical field name exactly;
+      the only work is prefix-stripping. Easy name match, easy transformation.
+
+  policy_number:
+    canonical_target: policy_number
+    confidence_floor: 0.85
+    transformation: "d.policy_id"
+    is_hard: false
+    notes: >
+      Human-readable policy number kept as the raw PCM-prefixed string (unlike
+      policy_id, no prefix stripped). Column name matches canonical exactly.
+
+  effective_date:
+    canonical_target: start_date
+    confidence_floor: 0.75
+    transformation: "CAST(d.effective_date AS DATE)"
+    date_format: ISO8601
+    is_hard: false
+    notes: "ISO 8601 string, trivial cast. No compact-date macro needed (contrast with PAS-L)."
+
+  expiration_date:
+    canonical_target: end_date
+    confidence_floor: 0.75
+    transformation: "CAST(d.expiration_date AS DATE)"
+    date_format: ISO8601
+    is_hard: false
+    notes: "Same as effective_date — ISO 8601, trivial cast."
+
+  insured_name:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.insured_name"
+    is_hard: false
+    notes: "Insured name (PII). No canonical field — customer identity comes from CRM, not PAS-M."
+
+  insured_ein:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.insured_ein"
+    is_hard: true
+    notes: >
+      Commercial insured's EIN (tax ID), PAS-M's analogue of PAS-L's INS_SSN_LAST4 — but
+      the name is more tempting to over-map: "EIN" reads like THE identifier for this
+      insured, which could pull a naive mapper toward customer_id (a required bigint
+      canonical field). It is a string in XX-XXXXXXX format, not a generic surrogate key,
+      and PAS-M has no customer FK at all (see missing_standard_fields). Correct answer:
+      extended_attributes.
+
+  written_premium:
+    canonical_target: premium_amount
+    confidence_floor: 0.65
+    transformation: "CAST(d.written_premium AS DECIMAL(12,2))"
+    is_hard: true
+    notes: >
+      THE deliberate cross-source trap. PAS-L's ANNU_PREM_AMT (same canonical target)
+      is integer cents requiring /100. PAS-M's written_premium is ALREADY decimal
+      dollars — no division. An agent that generalized "premium columns need /100" from
+      PAS-L experience (whether via a hardcoded prompt rule, a few-shot example, or a
+      tuned heuristic) will get this wrong on PAS-M. This is the single most important
+      column in this catalog for testing genuine cross-source generalization rather than
+      memorized PAS-L patterns.
+
+  total_coverage_limit:
+    canonical_target: coverage_limit
+    confidence_floor: 0.55
+    transformation: "CAST(d.total_coverage_limit AS DECIMAL(14,2))"
+    is_hard: false
+    notes: >
+      Decimal dollars, no conversion (same dollars-not-cents fact as written_premium,
+      but a weaker trap since coverage_limit isn't as strongly cents-coded a name as
+      "premium" tends to be in PAS-L-trained intuition).
+
+  policy_deductible:
+    canonical_target: policy_deductible
+    confidence_floor: 0.55
+    transformation: "CAST(d.policy_deductible AS DECIMAL(12,2))"
+    is_hard: false
+    notes: "Decimal dollars, no conversion. Exact name match to canonical field."
+
+  policy_status:
+    canonical_target: policy_status
+    confidence_floor: 0.65
+    transformation: "INITCAP(LOWER(d.policy_status))"
+    is_hard: true
+    notes: >
+      PAS-M stores status as full uppercase words (ACTIVE/CANCELLED/EXPIRED/PENDING/LAPSED).
+      The canonical field expects free-text Title Case (Active/Cancelled/...) to stay
+      consistent with PAS-L's resolved values. A naive mapper passes the raw uppercase
+      value through unchanged, producing a casing mismatch across the two sources in
+      slv_policy_unified — easy to miss because no code-lookup table is obviously needed
+      (no seed map exists for this one; it's a pure string-casing transform).
+
+  line_of_business:
+    canonical_target: line_of_business
+    secondary_target: product_code
+    confidence_floor: 0.60
+    transformation: "COALESCE(lb.lob_description, d.line_of_business)  -- AND separately: COALESCE(lb.product_code, d.line_of_business) AS product_code"
+    is_hard: true
+    notes: >
+      The deliberately hardest column in this catalog. line_of_business maps directly to
+      the canonical line_of_business field — but it is ALSO the ONLY source for product_code,
+      via a seed_pasm_lob_map lookup (COMMERCIAL_GENERAL_LIABILITY -> CGL-STD, etc.).
+      Unlike PAS-L, there is NO separate product_code-shaped column anywhere in this table
+      to fall back on. A mapper that finds the easy direct match (line_of_business ->
+      line_of_business) and stops has silently produced a FN on product_code, a required
+      canonical field, with no remaining unmapped column for it to ever attach to.
+
+  agency_code:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.agency_code"
+    is_hard: false
+    notes: "Agency code string. No canonical field — extended_attributes."
+
+  distribution_channel:
+    canonical_target: channel_code
+    confidence_floor: 0.80
+    transformation: "d.distribution_channel"
+    is_hard: false
+    notes: "'distribution_channel' is a listed alias for channel_code. Direct, easy match."
+
+  region_code:
+    canonical_target: region_code
+    confidence_floor: 0.85
+    transformation: "d.region_code"
+    is_hard: false
+    notes: "Exact name match to canonical field."
+
+  underwriting_tier:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.underwriting_tier"
+    is_hard: false
+    notes: >
+      T1/T2/T3, derived from risk_score at generation time. Not a canonical silver field
+      (same as PAS-L's UW_TIER) — extended_attributes.
+
+  cancellation_reason:
+    canonical_target: cancel_reason
+    confidence_floor: 0.75
+    transformation: "NULLIF(d.cancellation_reason, '')"
+    is_hard: false
+    notes: "Good fuzzy match to cancel_reason. Direct passthrough."
+
+  lapse_reason:
+    canonical_target: lapse_reason
+    confidence_floor: 0.80
+    transformation: "NULLIF(d.lapse_reason, '')"
+    is_hard: false
+    notes: >
+      Exact name match. Notable because PAS-L has NO lapse_reason column at all (always
+      NULL there) — an agent whose only experience is PAS-L's column set has never seen
+      this field exist, so correctly mapping it is a real (if easy) generalization signal,
+      not a memorized pattern.
+
+  original_policy_id:
+    canonical_target: original_policy_id
+    confidence_floor: 0.70
+    transformation: "CAST(NULLIF(REPLACE(NULLIF(d.original_policy_id, ''), 'PCM-', ''), '') AS INTEGER)"
+    is_hard: false
+    notes: >
+      Exact name match; same PCM- prefix-stripping pattern as policy_id. Mostly NULL
+      (only renewal/rewrite chains populate it) — PAS-L has no equivalent concept at all
+      (no endorsement-chain original-policy tracking), so this is PAS-M-only generalization
+      signal, like lapse_reason.
+
+  prior_carrier_name:
+    canonical_target: prior_carrier
+    confidence_floor: 0.70
+    transformation: "NULLIF(d.prior_carrier_name, '')"
+    is_hard: false
+    notes: >
+      Deliberately EASY, in direct contrast to PAS-L's PRIOR_CARR_CD (hard there because
+      it's a 3-char abbreviation not in the alias list). Here it's a full clean carrier
+      name with a near-exact alias match. Tests whether a mapper treats the same canonical
+      target's difficulty per-source on its actual signal quality, rather than carrying
+      over a "prior carrier is always hard" assumption from PAS-L tuning.
+
+  win_back_eligible:
+    canonical_target: win_back_eligible
+    confidence_floor: 0.65
+    transformation: "CASE WHEN LOWER(d.win_back_eligible) = 'true' THEN TRUE ELSE FALSE END"
+    is_hard: true
+    notes: >
+      Same canonical target as PAS-L's WINBK_FLG, but encoded completely differently:
+      PAS-M uses "true"/"false" string literals, not a Y/N flag. The common_assets
+      flag_to_boolean() macro (correct for PAS-L) is WRONG here — needs a plain
+      LOWER(x)='true' boolean cast instead. Tests whether the mapper picks the
+      source-appropriate transformation rather than reusing a PAS-L macro by habit.
+
+  risk_score:
+    canonical_target: risk_score
+    confidence_floor: 0.85
+    transformation: "CAST(d.risk_score AS INTEGER)"
+    is_hard: false
+    notes: "Exact name match, same 0-100 integer scale as PAS-L."
+
+  commercial_rating_group:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.commercial_rating_group"
+    is_hard: true
+    notes: >
+      Commercial product/rating-segment label (e.g. "CGL-STANDARD"), PAS-M-only concept.
+      Name resembles underwriting_tier closely enough to invite confusion — both look like
+      a "tier" or "rating" classification — but they are different things: this describes
+      the PRODUCT's rating segment, not this policy's own risk-based UW tier. Correct
+      answer: extended_attributes, distinct from underwriting_tier.
+
+  claims_made_flag:
+    canonical_target: null
+    confidence_floor: null
+    transformation: "d.claims_made_flag"
+    is_hard: false
+    notes: >
+      CGL-specific claims-made-vs-occurrence flag, mostly empty for non-CGL products.
+      Unambiguous name, no canonical field — extended_attributes.

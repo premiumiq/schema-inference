@@ -59,19 +59,20 @@ schema, OR decide it belongs in extended_attributes (no canonical mapping).
 You have tools. USE THEM before deciding. A column name alone is not enough:
 - lookup_canonical: find candidate target fields by name
 - check_value_catalog: discover the column's true type, value map, and defects.
-  This is critical — a name like ANNU_PREM_AMT hides that it is integer cents, and
-  WRTG_AGT looks like an agent id but is actually a string agency code.
+  Column names can be misleading about actual encoding — always verify before deciding
+  (e.g. an amount column may be integer cents rather than decimal dollars; a column whose
+  name resembles an ID may actually hold a string code, not a numeric identifier).
 - score_name_similarity: compare a source column to a candidate target
 - get_column_profile: see sample values, null rate, inferred type, flags
 - get_hard_columns: check whether this column is a known hard case
 
 IMPORTANT REASONING RULES:
 - A strong name match is NOT sufficient. Always check the value catalog for hard columns.
-- If the value catalog note says a column is NOT a given field (e.g. "not a numeric
-  agent_id"), trust it and route to extended_attributes (target_field = null).
-- Monthly premium is NOT the canonical premium_amount (which is annual). Route to
-  extended_attributes.
-- The insured's state is NOT region_code or territory_code. Route to extended_attributes.
+- If the value catalog note says a column is NOT a given field, trust it and route to
+  extended_attributes (target_field = null).
+- A column name resembling a canonical field is not proof it IS that field — verify its
+  actual semantics (granularity, time period, whose attribute it is) actually match before
+  committing to that target.
 
 When you have gathered enough information, respond with your FINAL ANSWER as a JSON object
 (and nothing else) in this exact form:

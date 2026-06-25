@@ -376,6 +376,95 @@ def _record_review_to_metamodel(
         store.close()
 
 
+# ─── Non-interactive review (test-fixture generation, NOT real review) ───────
+
+def auto_review_proposal(
+    proposal: MappingProposal,
+    accept_threshold: float = 0.70,
+    output_path: str | Path | None = None,
+    reviewer_identity: str = "auto-reviewer (non-interactive)",
+) -> MappingDefinition:
+    """Non-interactive stand-in for review_proposal() — for test-fixture
+    generation, demos, and CI. NOT a substitute for human review of real
+    client mappings; do not wire this into any production review path.
+
+    review_proposal() hard-requires an interactive TTY (raises SystemExit
+    otherwise), which blocks generating reviewer_action volume without a
+    human manually clicking through prompts every time. MAP-4 Layer 1's
+    few-shot bank curation (tools/curate_few_shot_bank.py) needs that volume
+    — its critic_override_accepted origin specifically requires
+    reviewer_action populated in mapping_history, which only review_proposal()
+    (or this function) ever writes.
+
+    Policy — a confidence-threshold PROXY for human judgment, not a
+    correctness guarantee:
+        confidence >= accept_threshold  -> accepted
+        confidence <  accept_threshold  -> skipped (-> extended_attributes)
+    Missing required fields all resolve to NULL (no human to ask).
+
+    Writes the same MappingDefinition shape and metamodel records as
+    review_proposal() — downstream consumers (curate_few_shot_bank.py,
+    backfill.py) see no structural difference. Only reviewer_identity marks
+    it as automated.
+    """
+    approved: list[ApprovedMapping] = []
+    extended: list[str] = list(proposal.unmapped_columns)
+
+    for m in proposal.mappings:
+        if m.confidence >= accept_threshold:
+            approved.append(ApprovedMapping(
+                source_column=m.source_column,
+                source_table=m.source_table,
+                target_field=m.target_field,
+                sql_expression=m.sql_expression,
+                confidence=m.confidence,
+                method=m.method,
+                notes=m.notes,
+                reviewer_action="accepted",
+            ))
+        else:
+            approved.append(ApprovedMapping(
+                source_column=m.source_column,
+                source_table=m.source_table,
+                target_field=None,
+                sql_expression=m.source_column,
+                confidence=m.confidence,
+                method=m.method,
+                notes="Auto-skipped by non-interactive reviewer (below accept_threshold)",
+                reviewer_action="skipped",
+            ))
+            extended.append(m.source_column)
+
+    extended = list(dict.fromkeys(extended))  # dedupe, preserve order
+    resolutions = [
+        MissingFieldResolution(target_field=f, resolution="NULL")
+        for f in proposal.missing_standard_fields
+    ]
+
+    _record_review_to_metamodel(proposal, approved)
+
+    definition = MappingDefinition(
+        source_name=proposal.source_name,
+        table_name=proposal.table_name,
+        approved_mappings=approved,
+        extended_attributes=extended,
+        missing_field_resolutions=resolutions,
+        reviewer_identity=reviewer_identity,
+        reviewed_at=datetime.now(),
+        profile_hash="",
+    )
+
+    if output_path is None:
+        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
+        fname = f"{proposal.source_name}_{proposal.table_name}_mapping.json"
+        output_path = MAPPINGS_DIR / fname
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(definition.model_dump_json(indent=2), encoding="utf-8")
+
+    return definition
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def review_proposal(

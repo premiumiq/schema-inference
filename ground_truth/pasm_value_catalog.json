@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "source": "pasm",
+  "table": "pasm_policy",
+  "description": "Ground truth valid values, formats, and ranges for pasm_policy columns. Used by score_mappings.py and data-quality validation. Amounts are decimal dollars (type: decimal_dollars), NOT integer cents — contrast with pasl_value_catalog.json's integer_cents columns. score_mappings.py's _check_transformation() has no rule for decimal_dollars (returns not-applicable, correctly skipping the /100 check it would wrongly apply for an integer_cents type).",
+  "columns": {
+    "policy_id": {
+      "type": "string_id",
+      "pattern": "^PCM-\\d+$",
+      "description": "PCM-prefixed policy identifier.",
+      "examples": ["PCM-00012345", "PCM-00098765"],
+      "notes": "Prefix stripped + cast to integer for canonical policy_id."
+    },
+    "policy_number": {
+      "type": "string_id",
+      "pattern": "^PCM-\\d+$",
+      "description": "Same raw value as policy_id, kept as a string (no prefix stripped) for canonical policy_number."
+    },
+    "effective_date": {
+      "type": "date",
+      "format": "ISO8601",
+      "valid_range": ["2018-01-01", "2027-12-31"],
+      "description": "Policy effective date, ISO 8601 (YYYY-MM-DD)."
+    },
+    "expiration_date": {
+      "type": "date",
+      "format": "ISO8601",
+      "valid_range": ["2019-01-01", "2028-12-31"],
+      "description": "Policy expiration date. Always 12 months after effective_date."
+    },
+    "insured_name": {
+      "type": "string",
+      "max_length": 80,
+      "description": "Commercial insured business name."
+    },
+    "insured_ein": {
+      "type": "string_id",
+      "pattern": "^\\d{2}-\\d{7}$",
+      "description": "Employer Identification Number (commercial tax ID), XX-XXXXXXX format.",
+      "notes": "PII fragment. Not a generic customer surrogate key despite the 'identifier' framing of the name."
+    },
+    "written_premium": {
+      "type": "decimal_dollars",
+      "min_dollars": 500.00,
+      "max_dollars": 750000.00,
+      "description": "Annual written premium, ALREADY in decimal dollars.",
+      "transformation": "none — direct CAST, no division",
+      "notes": "Contrast with PAS-L's ANNU_PREM_AMT (integer_cents, requires /100). Mapping this to premium_amount with a /100 division would be WRONG here."
+    },
+    "total_coverage_limit": {
+      "type": "decimal_dollars",
+      "min_dollars": 100000.00,
+      "max_dollars": 10000000.00,
+      "description": "Total policy coverage limit, decimal dollars, no conversion.",
+      "transformation": "none — direct CAST"
+    },
+    "policy_deductible": {
+      "type": "decimal_dollars",
+      "min_dollars": 500.00,
+      "max_dollars": 50000.00,
+      "description": "Policy deductible, decimal dollars, no conversion.",
+      "transformation": "none — direct CAST"
+    },
+    "policy_status": {
+      "type": "coded",
+      "valid_values": ["ACTIVE", "CANCELLED", "EXPIRED", "PENDING", "LAPSED"],
+      "description": "Full uppercase word status codes.",
+      "derivation": "INITCAP(LOWER(x))",
+      "notes": "Needs case-normalization to match PAS-L's resolved Title Case values (Active/Cancelled/...) in slv_policy_unified. No code-lookup seed table involved — pure string transform."
+    },
+    "line_of_business": {
+      "type": "coded",
+      "valid_values": ["COMMERCIAL_GENERAL_LIABILITY", "WORKERS_COMPENSATION", "COMMERCIAL_PACKAGE_POLICY", "COMMERCIAL_UMBRELLA"],
+      "description": "Verbose line-of-business code. Source for product_code via seed_pasm_lob_map (COMMERCIAL_GENERAL_LIABILITY -> CGL-STD, WORKERS_COMPENSATION -> WC-STD, COMMERCIAL_PACKAGE_POLICY -> CPP-STD, COMMERCIAL_UMBRELLA -> UMB-STD).",
+      "notes": "No separate product_code-shaped column exists anywhere in pasm_policy. This is the ONLY path to product_code."
+    },
+    "agency_code": {
+      "type": "string_code",
+      "pattern": "^AGY\\d{3,6}$",
+      "description": "Agency code, same format convention as PAS-L's AGCY_CD."
+    },
+    "distribution_channel": {
+      "type": "coded",
+      "valid_values": ["AGENT", "BROKER", "DIRECT", "AFFINITY"],
+      "description": "Distribution channel code."
+    },
+    "region_code": {
+      "type": "coded",
+      "valid_values": ["NE", "SE", "MW", "SW", "W"],
+      "description": "Geographic region code."
+    },
+    "underwriting_tier": {
+      "type": "coded",
+      "valid_values": ["T1", "T2", "T3"],
+      "description": "Underwriting tier, derived from risk_score at generation time (same derivation rule as PAS-L)."
+    },
+    "cancellation_reason": {
+      "type": "coded",
+      "valid_values": ["NP", "RQ", "UW", "FR", "MV"],
+      "description": "Cancellation reason code. NULL on active policies.",
+      "notes": "Same code set as PAS-L's CNCL_RSN_CD."
+    },
+    "lapse_reason": {
+      "type": "coded",
+      "valid_values": ["NONPAY", "NONRENEW", "CARRIER_EXIT"],
+      "description": "Lapse reason code. PAS-L has no equivalent column (always absent there).",
+      "notes": "PAS-M-only field — never appears in PAS-L's column set at all."
+    },
+    "original_policy_id": {
+      "type": "string_id",
+      "pattern": "^PCM-\\d+$",
+      "description": "Original policy ID for renewal/rewrite chains. NULL for the large majority of policies (only chained ones populate it).",
+      "notes": "PAS-L has no endorsement-chain tracking concept at all — PAS-M-only generalization signal."
+    },
+    "prior_carrier_name": {
+      "type": "string",
+      "max_length": 60,
+      "description": "Full prior carrier name (e.g. 'Allstate Fire and Casualty').",
+      "notes": "Contrast with PAS-L's PRIOR_CARR_CD (3-char abbreviation) — this is a clean full-name match, deliberately easier."
+    },
+    "win_back_eligible": {
+      "type": "boolean_string",
+      "valid_values": ["true", "false"],
+      "description": "Win-back eligible flag as lowercase string literals, NOT a Y/N flag.",
+      "transformation": "LOWER(x) = 'true'",
+      "notes": "Same canonical target as PAS-L's WINBK_FLG (Y/N, needs flag_to_boolean macro), but PAS-M's encoding is incompatible with that macro — needs a plain string-equality boolean cast instead."
+    },
+    "risk_score": {
+      "type": "integer",
+      "min": 0,
+      "max": 100,
+      "description": "Underwriting risk score, same 0-100 scale as PAS-L."
+    },
+    "commercial_rating_group": {
+      "type": "coded",
+      "valid_values": ["CGL-STANDARD", "WC-STANDARD", "CPP-STANDARD", "UMB-STANDARD"],
+      "description": "Commercial product rating segment label. PAS-M-only, CGL/WC/CPP/UMB-specific.",
+      "notes": "Name resembles underwriting_tier but is a different concept (product rating segment, not this policy's own risk tier)."
+    },
+    "claims_made_flag": {
+      "type": "boolean_string",
+      "valid_values": ["true", "false", ""],
+      "description": "Claims-made-vs-occurrence flag. Populated 'true' only for CGL-STD policies, empty otherwise."
+    }
+  }
+}

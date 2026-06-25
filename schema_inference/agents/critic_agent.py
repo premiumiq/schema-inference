@@ -32,12 +32,15 @@ canonical policy schema.
 
 Your job is to CHALLENGE each proposed mapping and catch errors. The mappings you are \
 reviewing are the hard cases — the ones most likely to be wrong. Common failure modes:
-- A column name that resembles a canonical field but means something different
-  (e.g. WRTG_AGT looks like agent_id but is a string agency code → extended_attributes).
-- Monthly premium mapped to premium_amount (which is annual) → should be extended_attributes.
-- Insured state mapped to region_code or territory_code → should be extended_attributes.
-- A correct field mapping that has the WRONG transformation (e.g. integer cents not
-  divided by 100).
+- A column name that resembles a canonical field but actually means something different
+  once you check its true type, value map, or what it's actually measuring — don't take
+  the name at face value.
+- A field whose granularity or time period doesn't match the canonical target (e.g. a
+  sub-period or derived figure mapped to a field that should hold the base/primary value).
+- An attribute belonging to a different entity than the canonical field implies (e.g.
+  describing the wrong party or the wrong geography level).
+- A correct field mapping that has the WRONG transformation (e.g. an encoding or unit
+  conversion that wasn't applied).
 
 For each column you receive: the source column name, its profile, the proposed target,
 the proposed SQL, the confidence, and a catalog NOTE explaining why the column is tricky.
