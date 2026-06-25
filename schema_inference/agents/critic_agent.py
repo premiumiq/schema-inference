@@ -21,6 +21,7 @@ import yaml
 
 from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..models import AgentTrace, ColumnMapping
+from .throttle import call_with_retry
 from .tools import _SCHEMA_CATALOG_PATH, check_value_catalog
 
 MODEL = "claude-sonnet-4-6"
@@ -165,12 +166,16 @@ def run_critic_agent(
     )
 
     client = anthropic.Anthropic()
-    response = client.messages.create(
+    # Prompt caching: system_prompt repeats across every CriticAgent call within
+    # a session (Layer 2's tuning loop calls this once per train/holdout run)
+    # — cache_control lets repeats within the 5-min window skip re-billing the
+    # cached prefix. No-op if below the model's minimum cacheable length.
+    response = call_with_retry(client, dict(
         model=MODEL,
         max_tokens=2048,
-        system=system_prompt,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
-    )
+    ))
 
     raw = "".join(b.text for b in response.content if b.type == "text").strip()
     # Strip fences / extract JSON

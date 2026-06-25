@@ -277,7 +277,7 @@ def main() -> None:
     p_map.add_argument("--no-llm", action="store_true", help="Skip LLM pass entirely")
     p_map.add_argument("--output", default=None, help="Output JSON path (default: stdout)")
     p_map.add_argument("--agent", action="store_true", help="Use the 5-agent pipeline instead of single-batch LLM")
-    p_map.add_argument("--concurrency", type=int, default=10, help="Agent concurrency (lower for rate limits, e.g. 1)")
+    p_map.add_argument("--concurrency", type=int, default=None, help="Agent concurrency (default: agent_config.yml's mapping_agent.concurrent_columns, or 10)")
     p_map.add_argument("--eval", action="store_true", help="Score the result against ground truth (demo/CI)")
 
     # ── review ──

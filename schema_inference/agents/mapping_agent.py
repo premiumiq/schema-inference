@@ -8,7 +8,8 @@ from the column name alone with no ability to look anything up.
 Flow per column:
   1. Send Claude the column profile + instructions + tool definitions.
   2. Claude calls a tool -> we execute it -> we return the result.
-  3. Repeat up to MAX_TOOL_CALLS, then force a final answer.
+  3. Repeat up to max_tool_calls_per_column (agent_config.yml, falls back to
+     MAX_TOOL_CALLS), then force a final answer.
   4. Parse Claude's final answer into a ColumnMapping + an AgentTrace.
 
 Columns are processed concurrently via asyncio (default 10 parallel).
@@ -21,11 +22,35 @@ import json
 
 from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..models import AgentToolCall, AgentTrace, ColumnMapping, ColumnProfile
+from .throttle import acall_with_retry
 from .tools import TOOL_DISPATCH, TOOL_SCHEMAS, register_profiles
 
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOOL_CALLS = 5
 DEFAULT_CONCURRENCY = 10
+
+# Prompt caching: system prompt + tool schemas are identical across every
+# column and every call within one run (system_prompt is resolved once per
+# run_mapping_agent() call, TOOL_SCHEMAS never changes) — exactly the repeated
+# prefix Anthropic's cache_control is for. No-op (silently ignored, not an
+# error) if the prefix is below the model's minimum cacheable length; safe to
+# leave on unconditionally. Cuts input-token cost on every call after the first
+# within the 5-min cache window — biggest single lever for MappingAgent cost.
+_CACHE_CONTROL = {"type": "ephemeral"}
+_TOOL_SCHEMAS_CACHED = [dict(t) for t in TOOL_SCHEMAS]
+_TOOL_SCHEMAS_CACHED[-1] = {**_TOOL_SCHEMAS_CACHED[-1], "cache_control": _CACHE_CONTROL}
+
+
+def _max_tool_calls() -> int:
+    """mapping_agent.max_tool_calls_per_column from agent_config.yml, falling
+    back to the hardcoded MAX_TOOL_CALLS. Was previously decorative — config
+    declared this knob but the code ignored it; now wired the same way as
+    _rule_weights()/_active_system_prompt()."""
+    try:
+        from .orchestrator import load_agent_config
+        return int(load_agent_config().get("mapping_agent", {}).get("max_tool_calls_per_column", MAX_TOOL_CALLS))
+    except Exception:
+        return MAX_TOOL_CALLS
 
 _SYSTEM_PROMPT = """You are an insurance data engineering agent. Your job is to map ONE \
 source column from a legacy policy admin system (PAS-L) to a canonical insurance policy \
@@ -77,18 +102,6 @@ def _active_system_prompt() -> str:
         store.close()
 
 
-async def _call_with_retry(client, kwargs, max_retries: int = 6):
-    """Call the Anthropic API, retrying with exponential backoff on rate limits."""
-    import anthropic
-    delay = 12.0  # seconds; with 5 RPM, ~12s spacing keeps us under the cap
-    for attempt in range(max_retries):
-        try:
-            return await asyncio.to_thread(client.messages.create, **kwargs)
-        except anthropic.RateLimitError:
-            if attempt == max_retries - 1:
-                raise
-            await asyncio.sleep(delay)
-            delay = min(delay * 1.5, 60.0)
 
 def _build_user_prompt(col: ColumnProfile, source_name: str) -> str:
     """The initial message describing the column to map.
@@ -152,6 +165,7 @@ async def _map_one_column(
     source_table: str,
     source_name: str,
     system_prompt: str,
+    max_tool_calls: int,
 ) -> tuple[ColumnMapping, AgentTrace]:
     """Run the tool-use loop for a single column. Returns (mapping, trace)."""
 
@@ -159,23 +173,24 @@ async def _map_one_column(
     tool_calls_log: list[AgentToolCall] = []
 
     final: dict | None = None
+    cached_system = [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
 
-    for _ in range(MAX_TOOL_CALLS + 1):
+    for _ in range(max_tool_calls + 1):
         # On the last allowed turn, drop tools to force a text answer
-        use_tools = len(tool_calls_log) < MAX_TOOL_CALLS
+        use_tools = len(tool_calls_log) < max_tool_calls
 
         kwargs = dict(
             model=MODEL,
             max_tokens=1024,
-            system=system_prompt,
+            system=cached_system,
             messages=messages,
         )
         if use_tools:
-            kwargs["tools"] = TOOL_SCHEMAS
+            kwargs["tools"] = _TOOL_SCHEMAS_CACHED
 
         # The anthropic SDK call is synchronous; run it in a thread so asyncio
         # can run other columns concurrently. Retry on rate-limit (429) with backoff.
-        response = await _call_with_retry(client, kwargs)
+        response = await acall_with_retry(client, kwargs)
 
         # Did Claude ask to use a tool?
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -267,6 +282,7 @@ async def _run_async(
     source_name: str,
     concurrency: int,
     system_prompt: str,
+    max_tool_calls: int,
 ) -> list[tuple[ColumnMapping, AgentTrace]]:
     """Run all columns concurrently, capped at `concurrency` in flight."""
     import anthropic
@@ -276,7 +292,7 @@ async def _run_async(
 
     async def _guarded(col: ColumnProfile):
         async with semaphore:
-            return await _map_one_column(client, col, source_table, source_name, system_prompt)
+            return await _map_one_column(client, col, source_table, source_name, system_prompt, max_tool_calls)
 
     return await asyncio.gather(*[_guarded(c) for c in columns])
 
@@ -312,18 +328,19 @@ def run_mapping_agent(
     # Register profiles so get_column_profile / generate_sql tools can see them
     register_profiles(all_profiles, is_empty_string_null)
     system_prompt = system_prompt_override or _active_system_prompt()
+    max_tool_calls = _max_tool_calls()
 
     # asyncio.run() crashes if an event loop is already running (Jupyter, async
     # CI runners). Detect that case and fall back to nest_asyncio.
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        results = asyncio.run(_run_async(columns, source_table, source_name, concurrency, system_prompt))
+        results = asyncio.run(_run_async(columns, source_table, source_name, concurrency, system_prompt, max_tool_calls))
     else:
         import nest_asyncio
         nest_asyncio.apply()
         results = loop.run_until_complete(
-            _run_async(columns, source_table, source_name, concurrency, system_prompt)
+            _run_async(columns, source_table, source_name, concurrency, system_prompt, max_tool_calls)
         )
     mappings = [m for m, _ in results]
     traces = [t for _, t in results]

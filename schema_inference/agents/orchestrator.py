@@ -69,7 +69,7 @@ def run_mapping(
     source_name: str,
     llm_threshold: float | None = None,
     use_agent: bool = True,
-    concurrency: int = 10,
+    concurrency: int | None = None,
     eval_mode: bool = False,
     mapping_system_prompt: str | None = None,
     critic_system_prompt: str | None = None,
@@ -88,7 +88,14 @@ def run_mapping(
                         behavior without every caller needing to thread it.
         use_agent:      If False, skip the agent pass (rule-only — useful for the
                         "before" half of the demo comparison).
-        concurrency:    Max columns processed in parallel by the agent.
+        concurrency:    Max columns processed in parallel by the agent. None
+                        (default) reads agent_config.yml's
+                        mapping_agent.concurrent_columns, falling back to 10
+                        if absent. Note: the shared throttle
+                        (schema_inference/agents/throttle.py) paces actual
+                        outbound calls process-wide regardless of this value
+                        — concurrency just controls how many columns queue
+                        up waiting their turn, not the real request rate.
         mapping_system_prompt: MAP-4 Layer 2 — override the MappingAgent's
                         system prompt for this run only (bypasses the
                         active/accepted lookup). Only tools/tune_prompts.py's
@@ -112,6 +119,8 @@ def run_mapping(
         llm_threshold = (
             load_agent_config().get("mapping_agent", {}).get("llm_threshold", DEFAULT_LLM_THRESHOLD)
         )
+    if concurrency is None:
+        concurrency = load_agent_config().get("mapping_agent", {}).get("concurrent_columns", 10)
 
     # ── Split off CDC metadata columns (never mapped) ────────────────────────
     business_cols = []

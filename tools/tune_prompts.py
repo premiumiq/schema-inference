@@ -43,8 +43,10 @@ injectable for testing the loop mechanics without live calls.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import difflib
 import importlib
+import io
 import json
 import sys
 import tempfile
@@ -66,6 +68,8 @@ for _stream in (sys.stdout, sys.stderr):
 import yaml
 
 from schema_inference.agents.orchestrator import run_mapping
+from schema_inference.agents.throttle import call_with_retry
+from schema_inference.mapper import _CDC_RE
 from schema_inference.metamodel.store import open_store
 from schema_inference.profiler import profile_file
 
@@ -139,19 +143,48 @@ def train_holdout_split(
 
 # ── Run + score helper ────────────────────────────────────────────────────────
 
+def _scoped_table(table, columns_subset: set[str]):
+    """Restrict a TableProfile to columns_subset (+ CDC columns, which never
+    get mapped anyway but orchestrator expects to see and exclude them).
+
+    Cost lever: without this, every _run_and_score call ran the live agent
+    pipeline over ALL 46 PAS-L columns regardless of whether train (32) or
+    holdout (14) was being scored — the split only changed what got scored
+    afterward, not what got computed. Scoping the table to just the relevant
+    split cuts pipeline cost roughly in proportion to split size.
+
+    Tradeoff: mapper._deduplicate()'s cross-column target-contention logic
+    (when two source columns compete for the same canonical field, the higher-
+    confidence one wins, the other is demoted) now only sees competitors
+    within this split. If two competing columns happened to land on opposite
+    sides of the train/holdout split, the winner could differ from a full-table
+    run. Rare on PAS-L's column set (few genuine multi-column contentions) —
+    accepted for the cost savings. Revisit if a future source has heavier
+    target contention.
+    """
+    cols = [c for c in table.columns if c.name in columns_subset or _CDC_RE.match(c.name)]
+    return table.model_copy(update={"columns": cols})
+
+
 def _run_and_score(
     data_file: Path,
     source_name: str,
     columns_subset: set[str],
     mapping_prompt: str | None = None,
     critic_prompt: str | None = None,
+    label: str = "",
 ) -> tuple["scorer.AggregateMetrics", list]:
-    """Profile + run the full agent pipeline once, then score ONLY
-    columns_subset. record_to_metamodel=False — a tuning trial against a
-    not-yet-accepted candidate is not a real mapping decision and must not
-    pollute mapping_history (MAP-4 Layer 1 scans it for few-shot candidates)."""
+    """Profile + run the agent pipeline scoped to columns_subset, then score
+    it. record_to_metamodel=False — a tuning trial against a not-yet-accepted
+    candidate is not a real mapping decision and must not pollute
+    mapping_history (MAP-4 Layer 1 scans it for few-shot candidates).
+
+    score()'s quiet=True only skips the per-column table — it still always
+    prints the full metrics block, which gets confusing fast across a
+    multi-round session (which block was train, which was holdout, which
+    round?). Suppressed here in favor of one labeled summary line."""
     profile = profile_file(data_file, source_name=source_name)
-    table = profile.tables[0]
+    table = _scoped_table(profile.tables[0], columns_subset)
 
     run = run_mapping(
         table, source_name=source_name, use_agent=True,
@@ -164,11 +197,15 @@ def _run_and_score(
     try:
         tmp.write(run.proposal.model_dump_json(indent=2))
         tmp.close()
-        return scorer.score(
-            proposal_path=Path(tmp.name), source_name=source_name,
-            quiet=True, use_color=False,
-            columns_subset=columns_subset, return_scores=True,
-        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            metrics, scores = scorer.score(
+                proposal_path=Path(tmp.name), source_name=source_name,
+                quiet=True, use_color=False,
+                columns_subset=columns_subset, return_scores=True,
+            )
+        if label:
+            print(f"  [{label}] {len(columns_subset)} columns | mean_loss={metrics.mean_loss:.4f} | f1={metrics.f1:.4f}")
+        return metrics, scores
     finally:
         Path(tmp.name).unlink(missing_ok=True)
 
@@ -235,11 +272,11 @@ def summarize_failures(failures: list[dict], current_prompt: str, client=None) -
         "Current system prompt:\n---\n" + current_prompt + "\n---\n\n"
         "Failures on the training split:\n" + json.dumps(failures, indent=2)
     )
-    response = client.messages.create(
+    response = call_with_retry(client, dict(
         model="claude-sonnet-4-6", max_tokens=1024,
-        system=_DIAGNOSIS_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": _DIAGNOSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
-    )
+    ))
     text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
     try:
         return _extract_json(text)
@@ -275,11 +312,11 @@ def propose_edit(current_prompt: str, failure_mode: str, client=None) -> dict | 
         f"Failure pattern to fix:\n{failure_mode}\n\n"
         f"Current prompt:\n---\n{current_prompt}\n---"
     )
-    response = client.messages.create(
+    response = call_with_retry(client, dict(
         model="claude-sonnet-4-6", max_tokens=4096,
-        system=_TUNER_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": _TUNER_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
-    )
+    ))
     text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
     try:
         data = _extract_json(text)
@@ -308,8 +345,11 @@ def check_determinism(
     noise — report mean/stdev so a human can judge before accepting."""
     kwarg_name = "mapping_prompt" if agent_name == "mapping" else "critic_prompt"
     losses = []
-    for _ in range(repeats):
-        metrics, _ = _run_and_score(data_file, source_name, holdout_columns, **{kwarg_name: candidate_prompt})
+    for i in range(repeats):
+        metrics, _ = _run_and_score(
+            data_file, source_name, holdout_columns, **{kwarg_name: candidate_prompt},
+            label=f"DETERMINISM {i + 1}/{repeats} | HOLDOUT",
+        )
         losses.append(metrics.mean_loss)
     return {
         "repeats": repeats, "losses": losses,
@@ -346,12 +386,13 @@ def run_tuning_session(
     current_prompt = _current_prompt_text(agent_name)
 
     baseline_metrics, baseline_holdout_scores = _run_and_score(
-        data_file, source_name, holdout_cols, **{kwarg_name: current_prompt}
+        data_file, source_name, holdout_cols, **{kwarg_name: current_prompt},
+        label="BASELINE | HOLDOUT",
     )
     best_prompt = current_prompt
     best_loss = baseline_metrics.mean_loss
     best_holdout_scores = baseline_holdout_scores
-    print(f"Baseline holdout mean_loss: {best_loss:.4f}\n")
+    print()
 
     store = open_store()
     parent_version_id = None
@@ -361,7 +402,10 @@ def run_tuning_session(
     for round_num in range(1, max_rounds + 1):
         print(f"-- Round {round_num}/{max_rounds} --")
 
-        _, train_scores = _run_and_score(data_file, source_name, train_cols, **{kwarg_name: best_prompt})
+        _, train_scores = _run_and_score(
+            data_file, source_name, train_cols, **{kwarg_name: best_prompt},
+            label=f"ROUND {round_num} | TRAIN (diagnose)",
+        )
         failures = diagnose(train_scores)
         print(f"  train failures/fragile: {len(failures)}")
 
@@ -382,7 +426,8 @@ def run_tuning_session(
             continue
 
         holdout_metrics, holdout_scores = _run_and_score(
-            data_file, source_name, holdout_cols, **{kwarg_name: candidate["prompt"]}
+            data_file, source_name, holdout_cols, **{kwarg_name: candidate["prompt"]},
+            label=f"ROUND {round_num} | HOLDOUT (validate)",
         )
 
         prev_correct = {s.column_name for s in best_holdout_scores if s.correct}

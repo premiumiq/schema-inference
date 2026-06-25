@@ -23,6 +23,7 @@ import re
 from ..canonical.policy import CANONICAL_BY_NAME
 from ..mapper import _generate_sql
 from ..models import AgentTrace, ColumnMapping
+from .throttle import call_with_retry
 
 MODEL = "claude-haiku-4-5-20251001"
 
@@ -98,12 +99,15 @@ def run_sql_agent(
     )
 
     client = anthropic.Anthropic()
-    response = client.messages.create(
+    # Prompt caching: _SYSTEM_PROMPT is a fixed constant repeated across every
+    # SQLAgent call within the 5-min cache window — see mapping_agent.py's
+    # _CACHE_CONTROL comment for the full rationale.
+    response = call_with_retry(client, dict(
         model=MODEL,
         max_tokens=1536,
-        system=_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
-    )
+    ))
 
     raw = "".join(b.text for b in response.content if b.type == "text").strip()
     if "```" in raw:
