@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..models import AgentToolCall, AgentTrace, ColumnMapping, ColumnProfile
 from .tools import TOOL_DISPATCH, TOOL_SCHEMAS, register_profiles
 
@@ -68,9 +69,19 @@ async def _call_with_retry(client, kwargs, max_retries: int = 6):
             await asyncio.sleep(delay)
             delay = min(delay * 1.5, 60.0)
 
-def _build_user_prompt(col: ColumnProfile) -> str:
-    """The initial message describing the column to map."""
+def _build_user_prompt(col: ColumnProfile, source_name: str) -> str:
+    """The initial message describing the column to map.
+
+    MAP-4 Layer 1: prepends a few-shot block of similar past examples
+    (retrieved from the metamodel store) when any clear the similarity
+    threshold. Empty string from retrieve_examples()/format_examples_block()
+    when the bank is empty or unavailable — no branch needed here.
+    """
+    examples_block = format_examples_block(retrieve_examples(source_name, col))
+    examples_section = f"{examples_block}\n\n" if examples_block else ""
+
     return (
+        f"{examples_section}"
         f"Map this source column.\n\n"
         f"Column name: {col.name}\n"
         f"Inferred type: {col.inferred_type}\n"
@@ -118,10 +129,11 @@ async def _map_one_column(
     client,
     col: ColumnProfile,
     source_table: str,
+    source_name: str,
 ) -> tuple[ColumnMapping, AgentTrace]:
     """Run the tool-use loop for a single column. Returns (mapping, trace)."""
 
-    messages = [{"role": "user", "content": _build_user_prompt(col)}]
+    messages = [{"role": "user", "content": _build_user_prompt(col, source_name)}]
     tool_calls_log: list[AgentToolCall] = []
 
     final: dict | None = None
@@ -230,6 +242,7 @@ async def _map_one_column(
 async def _run_async(
     columns: list[ColumnProfile],
     source_table: str,
+    source_name: str,
     concurrency: int,
 ) -> list[tuple[ColumnMapping, AgentTrace]]:
     """Run all columns concurrently, capped at `concurrency` in flight."""
@@ -240,7 +253,7 @@ async def _run_async(
 
     async def _guarded(col: ColumnProfile):
         async with semaphore:
-            return await _map_one_column(client, col, source_table)
+            return await _map_one_column(client, col, source_table, source_name)
 
     return await asyncio.gather(*[_guarded(c) for c in columns])
 
@@ -248,6 +261,7 @@ async def _run_async(
 def run_mapping_agent(
     columns: list[ColumnProfile],
     source_table: str,
+    source_name: str,
     all_profiles: list[ColumnProfile],
     is_empty_string_null: bool = True,
     concurrency: int = DEFAULT_CONCURRENCY,
@@ -257,6 +271,8 @@ def run_mapping_agent(
     Args:
         columns:             the low-confidence columns to map.
         source_table:        table name for the ColumnMapping records.
+        source_name:         logical source name — used to retrieve the
+                              relevant few-shot example bank (MAP-4 Layer 1).
         all_profiles:        ALL columns in the table (registered for tool lookups).
         is_empty_string_null: PAS-L style empty-string nulls.
         concurrency:         max columns processed in parallel.
@@ -272,12 +288,12 @@ def run_mapping_agent(
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        results = asyncio.run(_run_async(columns, source_table, concurrency))
+        results = asyncio.run(_run_async(columns, source_table, source_name, concurrency))
     else:
         import nest_asyncio
         nest_asyncio.apply()
         results = loop.run_until_complete(
-            _run_async(columns, source_table, concurrency)
+            _run_async(columns, source_table, source_name, concurrency)
         )
     mappings = [m for m, _ in results]
     traces = [t for _, t in results]

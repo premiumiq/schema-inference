@@ -19,6 +19,7 @@ import json
 
 import yaml
 
+from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..models import AgentTrace, ColumnMapping
 from .tools import _SCHEMA_CATALOG_PATH, check_value_catalog
 
@@ -92,12 +93,15 @@ def _select_targets(
 def run_critic_agent(
     mappings: list[ColumnMapping],
     profiles_by_name: dict,
+    source_name: str = "pasl",
 ) -> tuple[list[ColumnMapping], list[AgentTrace], int]:
     """Adversarially review hard/below-floor mappings. Returns (updated_mappings, traces, override_count).
 
     Args:
         mappings:           the current ColumnMapping list (post MappingAgent).
         profiles_by_name:   {column_name: ColumnProfile} for context.
+        source_name:        logical source name — used to retrieve the
+                            relevant few-shot example bank (MAP-4 Layer 1).
 
     Returns:
         (updated_mappings, traces, override_count)
@@ -115,7 +119,8 @@ def run_critic_agent(
     for m in targets:
         prof = profiles_by_name.get(m.source_column)
         note = catalog_notes.get(m.source_column, {}).get("note", "")
-        review_items.append({
+        examples = retrieve_examples(source_name, prof) if prof else []
+        item = {
             "source_column": m.source_column,
             "proposed_target": m.target_field,
             "proposed_sql": m.sql_expression,
@@ -125,7 +130,11 @@ def run_critic_agent(
             "is_cents_integer": prof.is_cents_integer if prof else None,
             "is_coded_column": prof.is_coded_column if prof else None,
             "catalog_note": note,
-        })
+        }
+        examples_block = format_examples_block(examples)
+        if examples_block:
+            item["similar_past_examples"] = examples_block
+        review_items.append(item)
 
     user_prompt = (
         "Review these proposed mappings. Challenge each one and decide confirm or override.\n\n"

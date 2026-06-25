@@ -51,6 +51,7 @@ def _backfill_proposal(store: MetamodelStore, path: Path) -> int:
             confidence=m.get("confidence", 0.0),
             method=m.get("method", "rule"),
             sql_expression=m.get("sql_expression", ""),
+            notes=m.get("notes", ""),
         )
         # record_mapping stamps recorded_at=now(); overwrite with the file's
         # mtime so backfilled history reflects when the run actually happened.
@@ -86,6 +87,7 @@ def _backfill_mapping_definition(store: MetamodelStore, path: Path) -> int:
             method=a.get("method", "rule"),
             sql_expression=a.get("sql_expression", ""),
             reviewer_action=a.get("reviewer_action"),
+            notes=a.get("notes", ""),
         )
         store._conn.execute(
             "UPDATE mapping_history SET recorded_at = ? WHERE id = ?",

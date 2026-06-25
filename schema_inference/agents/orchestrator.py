@@ -107,6 +107,7 @@ def run_mapping(
             excluded_metadata.append(col.name)
         else:
             business_cols.append(col)
+    profiles_by_name = {c.name: c for c in business_cols}
 
     # ── Step 1: Rule pass (existing logic, unchanged) ────────────────────────
     rule_results: dict[str, ColumnMapping] = {}
@@ -130,6 +131,7 @@ def run_mapping(
         agent_mappings, agent_traces = run_mapping_agent(
             columns=low_conf_cols,
             source_table=table.name,
+            source_name=source_name,
             all_profiles=business_cols,
             is_empty_string_null=table.is_empty_string_null,
             concurrency=concurrency,
@@ -154,9 +156,8 @@ def run_mapping(
     critic_overrides = 0
     if use_agent:
         from .critic_agent import run_critic_agent
-        profiles_by_name = {c.name: c for c in business_cols}
         merged, critic_traces, critic_overrides = run_critic_agent(
-            merged, profiles_by_name
+            merged, profiles_by_name, source_name=source_name
         )
         traces.extend(critic_traces)
 
@@ -199,11 +200,13 @@ def run_mapping(
     # ── MAP-1: persist every mapping decision to the metamodel store ─────────
     # Best-effort: open_store() returns None on any failure, never raises —
     # history must never block the mapping pipeline.
+    from ..metamodel.few_shot import build_profile_signature
     from ..metamodel.store import open_store
     store = open_store()
     if store:
         try:
             for m in final_mappings:
+                prof = profiles_by_name.get(m.source_column)
                 store.record_mapping(
                     run_id=run_id,
                     source_name=source_name,
@@ -213,6 +216,8 @@ def run_mapping(
                     confidence=m.confidence,
                     method=m.method,
                     sql_expression=m.sql_expression,
+                    notes=m.notes,
+                    profile_signature=build_profile_signature(prof) if prof else None,
                 )
         finally:
             store.close()

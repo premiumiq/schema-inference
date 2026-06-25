@@ -370,6 +370,7 @@ def _record_review_to_metamodel(
                     method=a.method,
                     sql_expression=a.sql_expression,
                     reviewer_action=a.reviewer_action,
+                    notes=a.notes,
                 )
     finally:
         store.close()
