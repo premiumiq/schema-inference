@@ -23,6 +23,9 @@ class CanonicalField:
     required: bool
     description: str
     aliases: list[str] = field(default_factory=list)
+    secondary_target: str | None = None   # for legitimate dual-mappings (MAP-3):
+                                           # if two columns tie for this field, the
+                                           # runner-up may belong here instead
 
     def all_names(self) -> list[str]:
         return [self.name] + self.aliases
@@ -36,6 +39,7 @@ CANONICAL_FIELDS: list[CanonicalField] = [
         description="Integer policy identifier (natural key). Source prefix like PCL-/PCM- stripped.",
         aliases=["pol_no", "pol_num", "pol_id", "policy_no", "policy_number", "pol_ref",
                  "sys_pol_id", "pol_nbr", "policy_nbr", "policyid", "policy_key"],
+        secondary_target="policy_number",         
     ),
     CanonicalField(
         name="policy_number",

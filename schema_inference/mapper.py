@@ -490,7 +490,7 @@ def map_table(
     # Separate mapped vs unmapped
     unmapped = [m.source_column for m in mappings if m.target_field is None]
     # De-duplicate: if two source cols map to the same target, keep higher confidence
-    final_mappings = _deduplicate(mappings)
+    final_mappings, contested = _deduplicate(mappings)
 
     # Missing required fields
     mapped_targets = {m.target_field for m in final_mappings if m.target_field}
@@ -506,35 +506,96 @@ def map_table(
         mappings=final_mappings,
         unmapped_columns=unmapped,
         missing_standard_fields=missing,
+        contested_mappings=contested,
         excluded_metadata_columns=excluded_metadata,
     )
 
 
-def _deduplicate(mappings: list[ColumnMapping]) -> list[ColumnMapping]:
-    """If multiple source columns map to the same target, keep the highest-confidence one."""
-    best_by_target: dict[str, ColumnMapping] = {}
-    no_target: list[ColumnMapping] = []
+# Two mappings targeting the same field within this confidence gap are a "near-tie"
+# and get deliberate resolution instead of an arbitrary highest-confidence pick.
+TIE_EPSILON = 0.05
 
-    for m in mappings:
-        if m.target_field is None:
-            no_target.append(m)
+
+def _deduplicate(
+    mappings: list[ColumnMapping],
+) -> tuple[list[ColumnMapping], list[dict]]:
+    """Resolve multiple source columns mapping to the same target (MAP-3).
+
+    Returns (resolved_mappings, contested). For each target field:
+      - Clear winner (confidence gap >= TIE_EPSILON): keep the winner, demote losers.
+      - Near-tie with a secondary_target on the field: promote the runner-up to the
+        secondary field (both legitimately map).
+      - Near-tie with no secondary escape: collect as a contest for the critic /
+        reviewer; provisionally keep the higher-confidence one but flag it.
+    """
+    from .canonical.policy import CANONICAL_BY_NAME
+
+    no_target: list[ColumnMapping] = [m for m in mappings if m.target_field is None]
+    targeted = [m for m in mappings if m.target_field is not None]
+
+    # Group competitors by target field
+    by_target: dict[str, list[ColumnMapping]] = {}
+    for m in targeted:
+        by_target.setdefault(m.target_field, []).append(m)
+
+    resolved: list[ColumnMapping] = []
+    demoted: list[ColumnMapping] = []
+    contested: list[dict] = []
+
+    for target, competitors in by_target.items():
+        # Sort highest-confidence first
+        competitors.sort(key=lambda m: m.confidence, reverse=True)
+        winner = competitors[0]
+
+        if len(competitors) == 1:
+            resolved.append(winner)
+            continue
+
+        runner_up = competitors[1]
+        gap = winner.confidence - runner_up.confidence
+
+        if gap >= TIE_EPSILON:
+            # Clear winner — keep it, demote the rest (existing behavior)
+            resolved.append(winner)
+            for loser in competitors[1:]:
+                demoted.append(_demote(loser, "lower confidence than another source column"))
+            continue
+
+        # ── Near-tie ────────────────────────────────────────────────────────
+        field = CANONICAL_BY_NAME.get(target)
+        secondary = field.secondary_target if field else None
+
+        if secondary:
+            # Legitimate dual-mapping: winner -> primary, runner-up -> secondary
+            resolved.append(winner)
+            promoted = ColumnMapping(**{
+                **runner_up.model_dump(),
+                "target_field": secondary,
+                "notes": runner_up.notes + f" [promoted to secondary target {secondary} (near-tie on {target})]",
+            })
+            resolved.append(promoted)
+            # Any further competitors beyond the top two are demoted
+            for loser in competitors[2:]:
+                demoted.append(_demote(loser, f"near-tie on {target}, no further slot"))
         else:
-            existing = best_by_target.get(m.target_field)
-            if existing is None or m.confidence > existing.confidence:
-                best_by_target[m.target_field] = m
+            # Genuine contest — provisionally keep winner, flag for resolution
+            resolved.append(winner)
+            for loser in competitors[1:]:
+                demoted.append(_demote(loser, f"contested near-tie on {target}"))
+            contested.append({
+                "target_field": target,
+                "competing_columns": [m.source_column for m in competitors],
+                "confidences": {m.source_column: round(m.confidence, 4) for m in competitors},
+                "provisional_winner": winner.source_column,
+            })
 
-    # Demote losers to unmapped
-    winning_by_source = {m.source_column for m in best_by_target.values()}
-    demoted = [
-        ColumnMapping(
-            **{
-                **m.model_dump(),
-                "target_field": None,
-                "notes": m.notes + " [demoted: lower confidence than another source column mapping to same target]",
-            }
-        )
-        for m in mappings
-        if m.target_field is not None and m.source_column not in winning_by_source
-    ]
+    return resolved + no_target + demoted, contested
 
-    return list(best_by_target.values()) + no_target + demoted
+
+def _demote(m: ColumnMapping, reason: str) -> ColumnMapping:
+    """Return a copy of a mapping demoted to unmapped, with a reason in notes."""
+    return ColumnMapping(**{
+        **m.model_dump(),
+        "target_field": None,
+        "notes": m.notes + f" [demoted: {reason}]",
+    })

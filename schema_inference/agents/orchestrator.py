@@ -204,7 +204,7 @@ def run_mapping(
                 m.notes = (m.notes + " | " if m.notes else "") + \
                     f"target suppressed: {suppressed} has no source per catalog"
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
-    final_mappings = _deduplicate(merged)
+    final_mappings, contested = _deduplicate(merged)
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
     mapped_targets = {m.target_field for m in final_mappings if m.target_field}
     missing = [
@@ -218,6 +218,7 @@ def run_mapping(
         mappings=final_mappings,
         unmapped_columns=unmapped,
         missing_standard_fields=missing,
+        contested_mappings=contested,
         excluded_metadata_columns=excluded_metadata,
         run_id=run_id,
     )

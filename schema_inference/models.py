@@ -60,6 +60,9 @@ class MappingProposal(BaseModel):
     mappings: list[ColumnMapping]
     unmapped_columns: list[str]             # routed to extended_attributes
     missing_standard_fields: list[str]      # slv_policy fields with no source match
+    contested_mappings: list[dict] = []     # MAP-3: near-tie contests the pipeline couldn't
+                                            # resolve; each dict has target_field + competing
+                                            # source_columns for a dedicated reviewer phase
     excluded_metadata_columns: list[str]    # _CDC_* columns excluded from mapping
     run_id: str | None = None               # links back to AgentMappingRun / metamodel (MAP-1); None for legacy rule+LLM path
 
