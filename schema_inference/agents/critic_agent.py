@@ -20,6 +20,7 @@ import json
 import yaml
 
 from ..metamodel.few_shot import format_examples_block, retrieve_examples
+from ..canonical.policy import CANONICAL_BY_NAME
 from ..models import AgentTrace, ColumnMapping
 from .throttle import call_with_retry
 from .tools import _SCHEMA_CATALOG_PATH, check_value_catalog
@@ -245,3 +246,123 @@ def run_critic_agent(
         ))
 
     return updated, traces, override_count
+
+# ─── MAP-3: contested near-tie resolution ────────────────────────────────────
+
+_CONTEST_SYSTEM_PROMPT = """You are a senior insurance data engineer resolving a \
+contested column mapping. Two or more source columns from a legacy policy system have \
+each been proposed as the mapping for the SAME canonical target field, with nearly \
+equal confidence. Your job is to decide which one genuinely belongs — or whether they \
+actually map to different fields.
+
+You are given, for each competing source column: its name, its data profile (inferred \
+type, sample values, null rate), and the catalog note describing what the target field \
+is meant to hold.
+
+Reason about which column's actual DATA best fits the target field — not just which \
+name looks closest. A column whose values match the target's meaning wins; a column \
+whose values clearly represent something else should be rejected (mapped elsewhere or \
+to extended_attributes).
+
+Respond with ONLY a JSON object:
+{
+  "winner": "<source_column that best maps to the target, or null if none fit>",
+  "loser_disposition": "extended_attributes",
+  "rationale": "<one sentence explaining the decision>"
+}"""
+
+
+def resolve_contests(
+    contests: list[dict],
+    mappings: list[ColumnMapping],
+    profiles_by_name: dict,
+) -> tuple[list[ColumnMapping], list[dict]]:
+    """MAP-3: send each genuine contest to the critic as a comparison decision.
+
+    For each contest (two+ columns competing for one target with near-equal
+    confidence), ask the critic which column genuinely maps to the target. Update
+    the mappings accordingly. Contests the critic can't resolve stay in the
+    returned list for human review.
+
+    Returns (updated_mappings, unresolved_contests).
+    """
+    if not contests:
+        return mappings, []
+
+    import anthropic
+
+    client = anthropic.Anthropic()
+    by_col = {m.source_column: m for m in mappings}
+    unresolved: list[dict] = []
+
+    for contest in contests:
+        target = contest["target_field"]
+        competing = contest["competing_columns"]
+
+        # Build the comparison payload
+        field = CANONICAL_BY_NAME.get(target)
+        note = _load_catalog_notes().get(target, {}).get("note", "") if field else ""
+        candidates = []
+        for col in competing:
+            prof = profiles_by_name.get(col)
+            candidates.append({
+                "source_column": col,
+                "inferred_type": prof.inferred_type if prof else None,
+                "sample_values": prof.sample_values[:5] if prof else [],
+                "null_rate": prof.null_rate if prof else None,
+            })
+
+        user_prompt = (
+            f"Target field: {target}\n"
+            f"Target field type: {field.target_type if field else 'unknown'}\n"
+            f"Catalog note: {note or '(none)'}\n\n"
+            f"Competing source columns:\n{json.dumps(candidates, indent=2)}\n\n"
+            f"Which column genuinely maps to {target}?"
+        )
+
+        response = call_with_retry(client, dict(
+            model=MODEL,
+            max_tokens=512,
+            system=_CONTEST_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+        ))
+
+        raw = "".join(b.text for b in response.content if b.type == "text").strip()
+        if "```" in raw:
+            import re
+            fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+            if fenced:
+                raw = fenced[-1]
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end != -1:
+            raw = raw[start:end + 1]
+
+        try:
+            decision = json.loads(raw)
+        except Exception:
+            # Unparseable — leave for human review
+            unresolved.append(contest)
+            continue
+
+        winner = decision.get("winner")
+        rationale = decision.get("rationale", "")
+
+        if winner not in competing:
+            # Critic couldn't pick a clear winner → human review
+            unresolved.append(contest)
+            continue
+
+        # Apply: winner keeps target, losers demoted to extended_attributes
+        for col in competing:
+            m = by_col.get(col)
+            if m is None:
+                continue
+            if col == winner:
+                m.target_field = target
+                m.notes = (m.notes + " | " if m.notes else "") + f"[critic contest winner: {rationale}]"
+            else:
+                m.target_field = None
+                m.sql_expression = m.source_column
+                m.notes = (m.notes + " | " if m.notes else "") + f"[critic contest: lost to {winner}]"
+
+    return list(by_col.values()), unresolved

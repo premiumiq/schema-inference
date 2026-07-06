@@ -205,6 +205,12 @@ def run_mapping(
                     f"target suppressed: {suppressed} has no source per catalog"
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
     final_mappings, contested = _deduplicate(merged)
+    # ── MAP-3: escalate genuine contests to the critic for a comparison call ──
+    if use_agent and contested:
+        from .critic_agent import resolve_contests
+        final_mappings, contested = resolve_contests(
+            contested, final_mappings, profiles_by_name
+        )
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
     mapped_targets = {m.target_field for m in final_mappings if m.target_field}
     missing = [
