@@ -274,6 +274,60 @@ def _phase_missing_fields(
 
     return resolutions
 
+def _phase_contested_mappings(
+    contested: list[dict],
+    approved: list[ApprovedMapping],
+) -> None:
+    """MAP-3: dedicated review phase for near-tie contests the pipeline couldn't
+    resolve. For each contest, show the competing columns and let the reviewer
+    pick the winner (or send all to extended_attributes). Mutates `approved` in
+    place — the chosen winner keeps the target, the rest are set to unmapped."""
+    if not contested:
+        return
+
+    console.print(
+        f"\n[bold yellow]Contested mappings:[/bold yellow] "
+        f"{len(contested)} target(s) had near-tied source columns the agents couldn't resolve"
+    )
+
+    approved_by_col = {a.source_column: a for a in approved}
+
+    for contest in contested:
+        target = contest["target_field"]
+        competing = contest["competing_columns"]
+        confidences = contest.get("confidences", {})
+
+        console.print(f"\n  [bold]{target}[/bold] — {len(competing)} columns competing:")
+        for i, col in enumerate(competing, 1):
+            conf = confidences.get(col)
+            conf_str = f"(confidence {conf:.2f})" if conf is not None else ""
+            console.print(f"    [{i}] {col} {conf_str}")
+
+        options = [str(i) for i in range(1, len(competing) + 1)] + ["x"]
+        choice = Prompt.ask(
+            f"  Which column maps to {target}?  "
+            f"[1-{len(competing)}] pick a column  [x] none (all → extended_attributes)",
+            choices=options,
+            default="1",
+        )
+
+        if choice == "x":
+            winner = None
+        else:
+            winner = competing[int(choice) - 1]
+
+        for col in competing:
+            am = approved_by_col.get(col)
+            if am is None:
+                continue
+            if col == winner:
+                am.target_field = target
+                am.reviewer_action = "modified"
+                am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer chose as {target} winner]"
+            else:
+                am.target_field = None
+                am.reviewer_action = "modified"
+                am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer: not {target}]"
 
 def _phase_extended_attrs(
     extended_columns: list[str],
@@ -509,6 +563,8 @@ def review_proposal(
 
     # Phase 4: missing required fields
     resolutions = _phase_missing_fields(proposal.missing_standard_fields)
+    # MAP-3: dedicated review phase for unresolved near-tie contests
+    _phase_contested_mappings(proposal.contested_mappings, approved)
 
     # Phase 5: extended_attributes confirmation
     extended = _phase_extended_attrs(list(dict.fromkeys(extended)))  # deduplicate, preserve order
