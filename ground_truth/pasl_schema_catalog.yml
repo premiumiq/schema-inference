@@ -36,6 +36,13 @@ missing_standard_fields:
       It is derivable from PROD_CD (PA/PAP → Personal Auto, HO3/HO5 → Personal Property)
       but requires a seed lookup (seed_pasl_lob_map), not a direct column mapping.
 
+# ─── Row identity / dedup ground truth (MAP-5) ───────────────────────────────
+# The correct row-shape answer for scoring the RowShapeAgent's proposals.
+row_shape:
+  natural_key: ["POL_NO"]
+  recency_column: "POL_NO_SEQ"
+  dedup_pattern: "ROW_NUMBER() OVER (PARTITION BY POL_NO ORDER BY POL_NO_SEQ DESC) = 1"
+  dedup_strategy: "row_number"   # row_number | cdc_latest | none
 # Per-column mapping ground truth (46 columns in PASL_POL_HDR order)
 columns:
 
