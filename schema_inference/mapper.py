@@ -500,12 +500,17 @@ def map_table(
         if f.required and f.name not in mapped_targets
     ]
 
+     # MAP-5: infer row identity + dedup strategy from the profile
+    from .agents.row_shape_agent import infer_row_shape
+    row_shape_proposal = infer_row_shape(table, source_name=source_name)
+
     return MappingProposal(
         source_name=source_name,
         table_name=table.name,
         mappings=final_mappings,
         unmapped_columns=unmapped,
         missing_standard_fields=missing,
+        row_shape=row_shape_proposal.model_dump(),
         excluded_metadata_columns=excluded_metadata,
     )
 
