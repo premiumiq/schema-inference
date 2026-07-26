@@ -9,209 +9,158 @@ states what unlocks it.
 Numbering convention: `MAP-#`, distinct from the generator work packages
 (`WP-#`) used for baseline/simulation data work.
 
----
-
-## Phase A — Foundation (unlocks everything below)
-
-### MAP-1: Persist mappings into a metamodel
-
-**Goal:** Replace the current one-shot JSON files (`schema_inference/registry/*/proposal_*.json`,
-`schema_inference/mappings/*.json`) with a durable, queryable store of every
-mapping decision ever made, across runs, sources, and clients.
-
-**Why:** Loss-function tracking, ground-truth tuning, and few-shot curation
-(MAP-3, MAP-4) all need to ask "what did we map this column to last time,
-what was the verdict, and did a human ever override it?" — which requires
-history, not point-in-time files.
-
-**Scope:**
-- New schema (`metamodel`, could live in this Postgres warehouse as a set of
-  dbt seeds/tables, or a separate lightweight SQLite store for local/CI runs):
-  - `mapping_history` — one row per (run_id, source_name, table_name, source_column):
-    target_field, confidence, method, sql_expression, verdict (if scored),
-    reviewer_action (if human-reviewed), recorded_at.
-  - `loss_runs` — one row per scoring run: run_id, source_name, aggregate
-    metrics (precision/recall/F1/hard_f1/ext_attr_accuracy), config snapshot
-    (which prompt/threshold version was active).
-  - `prompt_versions` / `config_versions` — see MAP-4.
-- Backfill: import existing `registry/` and `mappings/` JSON into the new store
-  once, then retire the flat-file path (or keep flat files as the write-through
-  log, with the metamodel as the queryable index — TBD).
-
-**Depends on:** nothing — can start immediately.
-
-**Risk:** scope creep into "build a general data catalog." Keep the schema
-narrow — it only needs to answer questions MAP-3/MAP-4 ask.
+> **Repository note:** this pipeline is being extracted into its own
+> standalone repo (`premiumiq/schema-inference`). See the repo-split checklist
+> in `docs/repo-split-schema-inference.md`. All MAP items below continue
+> development there after the split.
 
 ---
 
-### MAP-2: Generalize the loss function
+## Phase A — Foundation ✅ Complete
 
-**Goal:** Turn `scripts/score_mappings.py` from a single-source demo scorer
-into the general-purpose loss function the rest of this roadmap depends on.
+### MAP-1: Persist mappings into a metamodel — **DONE**
 
-**Why:** Every later item (contested-mapping resolution, self-tuning,
-client-specific accuracy reporting) needs a loss number that is (a) computed
-the same way for any source/client, not just PAS-L, and (b) decomposable —
-per-column, per-source, and aggregate, with a real penalty curve rather than
-a flat binary correct/incorrect.
+SQLite-backed `MetamodelStore` at `schema_inference/metamodel/store.py`.
+Four tables: `mapping_history`, `loss_runs`, `prompt_versions`,
+`few_shot_examples`. Integrated into orchestrator (write on every run),
+reviewer (write human actions), evaluator (write loss runs). `open_store()`
+returns `None` on failure — never blocks the pipeline. `backfill.py` imports
+existing registry JSON one-time. DB file at
+`schema_inference/metamodel/metamodel.db` (gitignored).
 
-**Scope:**
-- Generalize `_load_catalog` / `score()` to accept any `*_schema_catalog.yml`
-  + `*_value_catalog.json` pair, keyed by source name — not hardcoded to
-  `pasl_schema_catalog.yml`.
-- Add a continuous loss term per column, not just the TP/TN/FP/FN/WRONG_TARGET
-  verdict:
-  - **Calibration penalty** — Brier-score-style `(confidence − correct)²` so an
-    overconfident wrong answer costs more than a low-confidence wrong answer.
-  - **Hard-column weight** — multiply loss by a configurable factor (`>1`) for
-    `is_hard` columns, since those are the cases that erode client trust fastest.
-  - **Transformation-correctness term** — today the catalog only scores
-    *target field* correctness; it doesn't check whether the generated SQL
-    produces the right runtime value (the `ANNU_PREM_AMT` /100 cents bug and
-    the `WRTG_AGT` string-vs-numeric bug from PR #125's review were target-correct-but-SQL-wrong
-    failure modes that the current scorer can't see). Needs a
-    `sql_correct: bool` ground-truth field per hard column, checked by
-    executing the SQL against a known sample row and comparing output.
-  - **Missing-required-field penalty** — fold `missing_standard_fields`
-    detection into the same weighted sum (it's currently a separate report).
-- Emit one **aggregate loss number** per run (not just F1) so later tuning
-  loops have a single scalar to minimize, plus the full per-column breakdown
-  for diagnosis.
-
-**Depends on:** nothing structurally, but should land before MAP-4 (self-tuning
-needs this loss function to exist first) and works much better once MAP-1
-exists (loss trends over time, not just one run).
+**Outstanding:** SQLite → dbt models / Snowflake tables migration (deferred;
+SQLite is correct for CI/local; revisit once real volume accumulates across
+multiple client sources).
 
 ---
 
-## Phase B — Contested mappings
+### MAP-2: Generalize the loss function — **DONE**
 
-### MAP-3: Resolve near-tied mappings instead of arbitrary dedup
+`scripts/score_mappings.py` now accepts any `{source_name}_schema_catalog.yml`
++ `{source_name}_value_catalog.json` pair (not hardcoded to PAS-L).
+Loss function: `loss = hard_mult × (target_term × TARGET_WEIGHT +
+calibration_penalty × CALIB_WEIGHT + sql_term × SQL_WEIGHT)`.
+`AggregateMetrics` exposes `mean_loss`, `f1`, `hard_f1`, `sql_correctness_rate`.
+Transformation-correctness check (`_check_transformation`) is static substring
+matching against the value catalog's `transformation` field — no live SQL engine
+needed. Per-source value catalogs exist for PAS-L
+(`ground_truth/pasl_value_catalog.json`) and PAS-M
+(`ground_truth/pasm_value_catalog.json`).
 
-**Goal:** When two or more source columns are equally plausible mappings to
-the same target field, don't silently pick one by confidence tiebreak — detect
-the tie and resolve it deliberately.
+---
 
-**Why:** `_deduplicate()` in `mapper.py` already demotes the loser when two
-columns compete for one target, but on a near-tie (confidences within, say,
-0.03 of each other) the "winner" is whichever the rule engine or LLM happened
-to score a hair higher — not a reasoned choice. PAS-L's `POL_NO` mapping to
-both `policy_id` (primary) and `policy_number` (secondary) shows the catalog
-already has a notion of legitimate dual mappings; the dedup logic doesn't use it.
+## Phase B — Contested mappings ✅ Complete
 
-**Scope:**
-- Detect near-ties: any two `ColumnMapping`s targeting the same field with
-  `abs(conf_a − conf_b) < tie_epsilon` (configurable, e.g. 0.05).
-- For each tie, check the canonical field for a `secondary_target` —
-  if both source columns legitimately map to *different* canonical fields
-  (one primary, one secondary), promote both instead of demoting one.
-- If it's a genuine single-target contest (two columns, one slot, no secondary
-  escape), escalate to the CriticAgent with a **comparison prompt** — "decide
-  between A and B for this target, not a confirm/override on one column in
-  isolation" — instead of the current per-column-independent critic review,
-  which never sees that two columns are competing.
-- Unresolvable ties (critic still can't decide) surface in the proposal as a
-  new `contested_mappings` list, separate from `unmapped_columns`, so the
-  human reviewer (`reviewer.py`) gets a dedicated review phase for these
-  instead of them being silently demoted.
+### MAP-3: Resolve near-tied mappings instead of arbitrary dedup — **DONE**
 
-**Depends on:** MAP-1 loosely (contested-mapping outcomes are useful tuning
-signal once persisted), but can be built standalone against the current
-`mapper.py` / `critic_agent.py`.
+Merged PR #184 (2026-07-26).
+
+`_deduplicate()` in `mapper.py` now detects near-ties
+(`abs(conf_a − conf_b) < TIE_EPSILON = 0.05`):
+- **Secondary-target escape:** if the canonical field has a `secondary_target`,
+  the runner-up is promoted to it rather than demoted — both columns legitimately
+  map.
+- **Genuine contest:** escalated to CriticAgent with a *comparison* prompt
+  ("decide between A and B for this target") rather than per-column review.
+  Verified on real data: given REGN_CD vs INS_ST both claiming `region_code`,
+  critic correctly picks REGN_CD citing data profile.
+- **Unresolvable contests:** surfaced in `MappingProposal.contested_mappings`
+  list, separate from `unmapped_columns`, for a dedicated reviewer phase
+  (`_phase_contested_mappings` in `reviewer.py`).
+
+`CanonicalField.secondary_target` added to `canonical/policy.py`. Full pipeline
+on real PAS-L Snowflake data: 44/46 accuracy (F1 0.93), 100% hard-column
+precision, no regression.
+
+PAS-L rarely triggers contests (already maps cleanly); PAS-M's ambiguous
+columns (`line_of_business` dual-target, etc.) are the natural next test case.
 
 ---
 
 ## Phase C — Self-tuning agent
 
-### MAP-4: Self-tuning agent (loss-driven prompt/rule adjustment)
+### MAP-4: Self-tuning agent (loss-driven prompt/rule adjustment) — **LAYERS 0–2 DONE; LAYER 3 DEFERRED**
 
-**Goal:** An agent that, given a ground-truth-labeled sample for a new
-source or client, automatically adjusts the rule-engine weights, confidence
-thresholds, few-shot examples, and (carefully, with guardrails) the agent
-system prompts to drive the loss function (MAP-2) down — producing a
-measurable, reproducible accuracy curve per client instead of a fixed,
-hand-tuned pipeline.
-
-**Why:** This is the highest-leverage item in the backlog. Every other
-mapper improvement is a one-time engineering fix; this is a mechanism that
-gets better per client without an engineer manually re-tuning the rule
-engine or rewriting prompts for every new source schema PremiumIQ ingests.
-
-**Depends on:** MAP-1 (metamodel — needs to persist what was tried and what
-the loss was) and MAP-2 (loss function — needs the thing to minimize).
-
-**Scope:** see the dedicated design doc —
-[`self-tuning-mapper-agent-plan.md`](self-tuning-mapper-agent-plan.md).
-This backlog entry exists to track build status; the design doc holds the
-actual plan, layered-tuning-stack design, and rollout phases.
+See dedicated design doc — [`self-tuning-mapper-agent-plan.md`](self-tuning-mapper-agent-plan.md).
 
 **Build status:**
-- Layer 0 (numeric rule-weight tuning) — done. `tools/tune_rule_weights.py`.
-- Layer 1 (few-shot example bank) — done. `tools/curate_few_shot_bank.py`,
-  `schema_inference/metamodel/few_shot.py`.
-- Layer 2 (textual prompt tuning) — done. `tools/tune_prompts.py`. Mechanics
-  verified with an injected fake LLM client (no `ANTHROPIC_API_KEY` in this
-  environment) — live diagnose/propose/validate quality is unverified until
-  run against a real key.
-- Layer 3 (learned critic trigger) — **still deferred, but the gate moved.**
-  A second source's ground truth now exists —
-  `ground_truth/pasm_schema_catalog.yml`/`pasm_value_catalog.json`
-  (`pasm_policy`, 23 columns, deliberately including cases PAS-L can't test:
-  decimal-dollar premiums vs PAS-L's integer-cents, a column with no
-  dedicated product_code field at all, a boolean encoded as `true`/`false`
-  strings instead of `Y`/`N`). Confirmed real, non-trivial headroom:
-  PAS-L-tuned rule weights transfer at only 76.5% F1 on PAS-M; full Layer 0
-  re-tuning improves to 88.2% F1 but hard-column F1 caps at 66.7% — the rule
-  engine genuinely cannot resolve `line_of_business`'s dual-target case or
-  `insured_ein`'s customer_id trap alone, leaving real work for
-  MappingAgent/CriticAgent. Layer 3 itself still needs accumulated real
-  `mapping_history` volume across both sources (not just the catalogs
-  existing) before fitting a classifier is worth it — revisit once that
-  volume exists. Found in passing: `agent_config.yml`'s `rule_engine.weights`
-  is a single global section, not per-source — applying Layer 0 for `pasm`
-  would clobber PAS-L's tuned weights; needs a per-source weights section
-  before both can be tuned independently. Updated 2026-06-25.
+
+- **Layer 0** (numeric rule-weight tuning) — **done.** `tools/tune_rule_weights.py`.
+  Grid-searches the `(name_sim, type_compat, pattern_bonus)` weight simplex,
+  writes winning weights to `agent_config.yml`. PAS-L result:
+  weights 0.65/0.25/0.10 → 0.15/0.20/0.65, F1 87.5% → 100%.
+  **Gap:** `agent_config.yml` has one global `rule_engine.weights` section —
+  applying Layer 0 for PAS-M would clobber PAS-L's tuned weights. Per-source
+  weights section needed before both sources can be tuned independently.
+
+- **Layer 1** (few-shot example bank) — **done.** `tools/curate_few_shot_bank.py`,
+  `schema_inference/metamodel/few_shot.py`. Scans `mapping_history` for
+  hard TPs and critic-override-accepted rows; persists to `few_shot_examples`
+  table (idempotent). Retrieval: 0.5 × flag-agreement + 0.5 × rapidfuzz name
+  similarity, top-K injected into MappingAgent user prompt. Bank is empty in
+  practice until real pipeline runs accumulate verdicts and reviewer actions.
+
+- **Layer 2** (textual prompt tuning) — **done.** `tools/tune_prompts.py`.
+  Diagnose → propose → validate loop: PromptDiagnosisAgent groups failure
+  patterns, PromptTunerAgent proposes one targeted edit per round, re-runs
+  pipeline on holdout split, accepts if loss improves with no regression.
+  Diff guardrail (0.50–0.995 diff ratio), train/holdout split, human approval
+  gate before prompt reaches production, early-stop after 3 consecutive failed
+  rounds. Live diagnose/propose quality unverified without `ANTHROPIC_API_KEY`
+  in CI; mechanics verified with injected fake LLM clients.
+  **Scope**: tuning runs are scoped to the split/ambiguous column subset only
+  (not full 46-col pipeline) via `_scoped_table()`.
+
+- **Layer 3** (learned critic trigger) — **deferred.** Gate: two sources'
+  ground truth now exists (PAS-L and PAS-M, `ground_truth/`). Confirmed real
+  headroom on PAS-M: PAS-L-tuned weights transfer at only 76.5% F1; full
+  re-tuning improves to 88.2% F1 / 66.7% hard-F1 — rule engine genuinely
+  cannot resolve `line_of_business` dual-target or `insured_ein` customer_id
+  trap. Layer 3 still needs accumulated `mapping_history` volume across both
+  sources (not just the catalogs) before fitting a classifier is worthwhile.
+  Revisit once 3+ client sources have gone through Layers 0–2.
 
 ---
 
-## Phase D — Row-level transforms (independent track)
+## Phase D — Row-level transforms ✅ Complete
 
-### MAP-5: Row identity + dedup inference agent
+### MAP-5: Row identity + dedup inference agent — **DONE**
 
-**Goal:** We've solved column-level mapping (source column → target field).
-The next-order problem is row-level: given a mapped table, what's the row
-identity (natural key) and what's the recency/version signal needed to
-project and deduplicate source rows into one canonical row per entity at
-the target?
+Merged PR #247 (2026-07-26, base corrected from `main` to
+`feature/dual-PAS-schema-inference`).
 
-**Why:** Every source in this project already needs this — PAS-L dedups via
-`ROW_NUMBER() OVER (PARTITION BY pol_no ORDER BY pol_no_seq DESC)`, PAS-M
-dedups via the `cdc_latest_record` macro on `_cdc_timestamp` — but those
-dedup strategies were hand-written by an engineer who already knew the
-source's shape. A new source arrives without that hand-holding.
+`schema_inference/agents/row_shape_agent.py` — deterministic heuristics over
+`TableProfile`:
+- **Natural key:** distinct-ratio (0.6) + non-null rate (0.2) + `is_id_column`
+  flag (0.2), argmax across business columns.
+- **Recency column:** `_SEQ`/`_VER` integer-like ID > CDC operation flag >
+  date column.
+- **Dedup strategy:** `row_number` (key + recency), `cdc_latest` (CDC flag
+  present), or `none` (table already one-row-per-entity).
+- Confidence 0.0–1.0, same shape as `ColumnMapping.confidence`.
 
-**Scope:**
-- A `RowShapeAgent` that inspects a `TableProfile` (after column mapping) and
-  proposes:
-  - candidate natural key column(s) (high distinct-count, low null-rate,
-    `is_id_column` or composite of low-cardinality codes + an id column),
-  - a recency/version column (monotonic-looking integer/sequence column, or
-    a date/timestamp column, or a CDC operation flag),
-  - the dedup SQL pattern (`ROW_NUMBER() OVER (PARTITION BY <key> ORDER BY
-    <recency> DESC) = 1`, or `WHERE _cdc_operation != 'D'` plus latest-wins,
-    or no dedup needed if the table is already one-row-per-entity).
-- Confidence score per proposal, same shape as `ColumnMapping.confidence`,
-  so it slots into the same review/scoring infrastructure (MAP-2's loss
-  function should be extendable to score row-shape proposals the same way
-  it scores column proposals).
-- Ground truth: extend `pasl_schema_catalog.yml`-style catalogs with a
-  `row_shape` section (`natural_key`, `recency_column`, `dedup_pattern`) so
-  this agent's proposals can be scored exactly like column mappings.
+`RowShapeProposal` model added to `schema_inference/models.py`. Attached to
+`MappingProposal.row_shape` (serialized as dict). Emitted from both the agent
+orchestrator path and the legacy `map_table()` path — pure profile logic,
+no LLM required.
 
-**Depends on:** MAP-2's loss-function infrastructure should be generalized
-enough to score a second class of proposal (row-shape, not just column
-mapping) without a parallel scoring codebase.
+`scripts/score_mappings.py` extended: `RowShapeScore` + `_score_row_shape()`
+weighted loss (key 0.5, recency 0.3, strategy 0.2), scored against a
+`row_shape` ground-truth section in the schema catalog.
+
+`ground_truth/pasl_schema_catalog.yml` extended with `row_shape` section:
+`natural_key: [POL_NO]`, `recency_column: POL_NO_SEQ`, `dedup_strategy: row_number`.
+Detector matches exactly on PAS-L, confidence 0.9, row-shape loss 0.0.
+
+LLM layer for ambiguous tables deferred — deterministic heuristics resolve
+PAS-L cleanly. PAS-M is the natural next case to test whether the agent layer
+earns its keep.
+
+**Conflict resolution at merge:** MAP-3 and MAP-5 both added a field to
+`MappingProposal(...)` at the same insertion point. Kept both:
+`contested_mappings=contested` (MAP-3) and `row_shape=row_shape_proposal.model_dump()`
+(MAP-5). `models.py` auto-resolved; `mapper.py` and `orchestrator.py` resolved
+manually (two-line addition at each site).
 
 ---
 
@@ -219,38 +168,86 @@ mapping) without a parallel scoring codebase.
 
 ### MAP-6: Many-to-one / one-to-many table mapping
 
-**Goal:** Handle the case where one canonical entity is split across
-multiple source tables (PAS-M's policy + coverage + premium + risk tables,
-which today are hand-joined in `pas_modern/policy.py` and the staging
-layer) or where multiple source systems' tables must merge into one target
-— without an engineer hand-writing the join logic per source.
+**Goal:** handle the case where one canonical entity is split across multiple
+source tables (PAS-M's policy + coverage + premium + risk tables, hand-joined
+today) or multiple source tables must merge into one target — without an
+engineer hand-writing the join logic per source.
 
-**Why flagged exploratory, not committed:** this is a genuinely harder
-problem than column mapping or row-shape inference. It requires inferring
-join keys *across tables*, reasoning about cardinality (1:1 vs 1:many vs
-many:many), and detecting when a "many-to-one" collapse needs an aggregation
-strategy (sum? latest? first-non-null?) rather than a join. The blast radius
-of getting this wrong (silently fanning out rows via a bad join) is much
-higher than a column mapping mistake. Worth a design spike before committing
-real build time — not worth scoping in detail until MAP-1 through MAP-5 are
-in production and we know how much of this clients actually need versus
-hand-building per-source joins as we do today.
+**Why flagged exploratory, not committed:** inferring join keys *across tables*,
+reasoning about cardinality (1:1 vs 1:many vs many:many), and choosing an
+aggregation strategy (sum? latest? first-non-null?) is genuinely harder than
+column mapping or row-shape inference. Blast radius of a bad join (silent row
+fan-out) is much higher than a column mapping mistake. Worth a design spike
+before committing build time — not worth scoping in detail until MAP-1 through
+MAP-5 are proven in production.
 
 **Depends on:** MAP-5 (table-level mapping is a strict superset of row-shape
-inference — you need row identity within each table before you can reason
-about how tables relate).
+inference — you need row identity within each table before reasoning about
+how tables relate).
 
 ---
 
-## Suggested build order
+## Phase F — IDE Integration
 
-1. **MAP-1 + MAP-2** in parallel (foundation; no dependency between them).
-2. **MAP-4** (self-tuning) — biggest audience impact per the working
-   hypothesis; start as soon as MAP-1/MAP-2 land. See the dedicated plan doc.
-3. **MAP-3** (contested mappings) — can run in parallel with MAP-4; smaller
-   scope, immediate accuracy win, and its outcomes become tuning signal for
-   MAP-4 once MAP-1 is in place.
-4. **MAP-5** (row-level) — independent track, can start any time after MAP-2
-   exists in a generalized form. Good candidate for a second engineer to pick
-   up in parallel with MAP-4.
-5. **MAP-6** (table-level) — design spike only, after MAP-5 ships.
+### MAP-7: VS Code extension + dbt integration
+
+**Goal:** surface the full schema inference pipeline inside the developer's
+editor, eliminating the CLI-only workflow and making the tool accessible to
+non-Python-fluent data engineers and client SMEs.
+
+**Scope:**
+- **Inline column annotations** — after a mapping run, annotate `.dat`/`.csv`
+  source files or staging model SQL with hover cards showing: proposed target
+  field, confidence, method (rule/agent/critic), verdict (if reviewed).
+- **Accept/reject review panel** — diff-style sidebar per column, same UX as
+  a GitHub PR review comment thread; actions write back to `reviewer.py` and
+  the metamodel without leaving the editor.
+- **dbt staging model scaffolding** — given a completed mapping, generate the
+  staging model `.sql` pre-filled with `CAST`/`COALESCE`/`NULLIF` stubs per
+  mapped column; unmapped columns flagged as diagnostics (red squiggles).
+- **Mapping health sidebar** — per-source F1, hard-F1, mean loss tiles, sourced
+  from the metamodel's `loss_runs` table; refreshes after each mapping run.
+- **Contested mapping panel** — surfaces `MappingProposal.contested_mappings`
+  (MAP-3) for human resolution directly in-editor.
+- **Row-shape display** — shows the inferred dedup key/strategy (MAP-5)
+  alongside the column mappings so engineers validate it before copying to a
+  dbt model.
+
+**Architecture:** VS Code extension (`schema-inference-vscode`) consumes the
+`schema_inference` Python package as a subprocess via the Language Server
+Protocol or a lightweight JSON-RPC bridge. The extension lives in the same
+`premiumiq/schema-inference` repo (post repo-split) as a `vscode/` workspace
+subfolder.
+
+**Depends on:** repo split (MAP-7 extension can't live in the insurance
+warehouse repo). MAP-3 and MAP-5 complete (contested mappings and row-shape
+are core UI surfaces).
+
+**Not yet started.** Design spike is the logical first step once the repo
+split is complete.
+
+---
+
+## Open design gaps
+
+| Gap | Impact | Owner |
+|-----|--------|-------|
+| Per-source rule weights in `agent_config.yml` | Layer 0 tuning for PAS-M clobbers PAS-L's weights | Before next Layer 0 `--apply` run on pasm |
+| PAS-M other tables cataloged | Only `pasm_policy` has ground truth; `pasm_coverage`/`pasm_premium_register`/`pasm_transaction_log`/`pasm_risk_object` uncatalogued | Blocking PAS-M end-to-end scoring |
+| Layer 1 volume | Few-shot bank empty — needs real accumulated `mapping_history` with verdicts | Accumulates naturally once pipeline runs in production |
+| Layer 2 live quality | tune_prompts.py mechanics verified with fake LLM client; live quality (actual prompt edit usefulness) not verified | Needs `ANTHROPIC_API_KEY` + real PAS-M run |
+| MAP-5 LLM layer | Deterministic heuristics handle PAS-L; ambiguous tables (PAS-M) may need LLM fallback | After PAS-M tested |
+| WP-10 schema snapshots | `schema_snapshots.enabled` placeholder — no generator code; only test fixture built | Separate WP |
+
+---
+
+## Suggested build order going forward
+
+1. **Repo split** — extract `schema_inference` into `premiumiq/schema-inference`
+   (see `docs/repo-split-schema-inference.md`). Unblocks MAP-7.
+2. **Per-source rule weights** — design + implement before any more Layer 0
+   `--apply` runs on PAS-M.
+3. **MAP-7 design spike** — VS Code extension architecture once repo split lands.
+4. **MAP-6 design spike** — table-level mapping; low priority until MAP-5 is
+   battle-tested across multiple sources.
+5. **Layer 3** — revisit once 3+ client sources have real `mapping_history` volume.

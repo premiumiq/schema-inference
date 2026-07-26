@@ -234,21 +234,22 @@ calibrating itself to your specific PAS export" pitch.
 
 ---
 
-## 8. Build order / MVP scope
+## 8. Build status
 
-1. **MAP-1 + MAP-2** (prerequisites — see roadmap doc).
-2. **Layer 0 tuner** (`tools/tune_rule_weights.py`) — ship first. Real
-   optimization, no LLM-in-the-loop risk, immediate measurable win, and it
-   gives every later layer a stronger baseline to improve from.
-3. **Layer 1 few-shot bank** — ship second. Still no prompt-rewriting risk;
-   mechanically curated from accumulated `mapping_history`.
-4. **Layer 2 tuning loop** — ship third, behind the human-approval gate from
-   day one. Start with a small, fixed round budget (e.g. 5) and a single
-   source (PAS-L, since the ground truth already exists) before generalizing
-   to "any client's catalog."
-5. **Layer 3** — explicitly deferred; revisit once 3+ clients/sources have
-   gone through Layers 0-2 and there's enough cross-source signal for a
-   learned router to be worth the complexity.
+| Layer | Status | File | Notes |
+|-------|--------|------|-------|
+| MAP-1 (metamodel) | **Done** | `schema_inference/metamodel/store.py` | SQLite, 4 tables, wired into orchestrator + reviewer + evaluator |
+| MAP-2 (loss function) | **Done** | `scripts/score_mappings.py` | Source-generic, continuous loss, PAS-L + PAS-M value catalogs |
+| Layer 0 (rule weights) | **Done** | `tools/tune_rule_weights.py` | PAS-L: 0.65/0.25/0.10 → 0.15/0.20/0.65, F1 100% |
+| Layer 1 (few-shot bank) | **Done** | `tools/curate_few_shot_bank.py`, `schema_inference/metamodel/few_shot.py` | Bank empty in practice — needs production run volume |
+| Layer 2 (prompt tuning) | **Done** | `tools/tune_prompts.py` | Mechanics verified with fake LLM client; live quality needs `ANTHROPIC_API_KEY` run |
+| Layer 3 (learned trigger) | **Deferred** | — | Gate: needs cross-source `mapping_history` volume; PAS-M catalog exists but no runs yet |
 
-Each layer should be validatable independently — don't build Layer 2 and
-discover Layer 0 weights were still bad. Climb the stack in order.
+**Open gap:** `agent_config.yml` has one global `rule_engine.weights` section.
+Running Layer 0 `--apply` for PAS-M clobbers PAS-L's tuned weights. Per-source
+weights section must be designed before independent tuning of multiple sources.
+
+**Next step:** run Layer 2 live (with `ANTHROPIC_API_KEY`) against PAS-M using
+its ground truth catalog — PAS-M has genuine headroom (88.2% F1, 66.7% hard-F1
+ceiling from rule engine alone) and decontaminated prompts, making it the right
+vehicle for a real end-to-end self-tuning demonstration.
