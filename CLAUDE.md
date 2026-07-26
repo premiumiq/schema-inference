@@ -23,13 +23,21 @@ cp .env.example .env        # fill in ANTHROPIC_API_KEY (and Snowflake creds if 
 
 ## Common commands
 
-```bash
-# Rule engine only — no API key
-python -m schema_inference map examples/insurance/test_data/pasl_policy.dat --source-name pasl
+`map` always takes a profile JSON (from `profile`), not a raw source file — the CLI
+is a two-step `profile` → `map` pipeline, not a single combined command.
 
-# Full 5-agent pipeline, scored against ground truth
-python -m schema_inference map examples/insurance/test_data/pasl_policy_sample.dat \
-  --source-name pasl --agent --eval
+```bash
+# 1. Profile a source file (writes registry/{source}/profile_{table}.json)
+python -m schema_inference profile examples/insurance/test_data/pasl_policy.dat --source-name pasl
+
+# 2a. Rule engine only — no API key
+python -m schema_inference map schema_inference/registry/pasl/profile_pasl_policy.json \
+  --table-name pasl_policy --no-llm
+
+# 2b. Full 5-agent pipeline, scored against ground truth
+python -m schema_inference profile examples/insurance/test_data/pasl_policy_sample.dat --source-name pasl
+python -m schema_inference map schema_inference/registry/pasl/profile_pasl_policy_sample.json \
+  --table-name pasl_policy_sample --agent --eval
 
 # Score an existing proposal against ground truth
 python scripts/score_mappings.py schema_inference/registry/pasl/proposal_pasl_snowflake.json \
@@ -45,12 +53,15 @@ python tools/tune_prompts.py --source-name pasl --rounds 5
 python -m pytest tests/ -v -m "not snowflake"
 
 # Single test
-python -m pytest tests/test_contest.py -v
-python -m pytest tests/test_contest.py::test_specific_case -v
+python -m pytest tests/test_dedup.py -v
+python -m pytest tests/test_dedup.py::test_dedup_clear_winner_demotes_loser -v
 ```
 
-CI (`.github/workflows/ci.yml`) runs the pytest suite, then a rule-engine smoke test
-on the 12-row CI fixture, then scores it against ground truth. No Anthropic key in CI.
+CI (`.github/workflows/ci.yml`) runs the pytest suite, then a profile + rule-engine
+smoke test on the 12-row CI fixture, then scores a committed proposal against ground
+truth. No Anthropic key in CI — the one test that needs a live call
+(`tests/test_contest.py`, marked `@pytest.mark.anthropic`) skips itself when
+`ANTHROPIC_API_KEY` is unset rather than failing.
 
 ## Architecture
 

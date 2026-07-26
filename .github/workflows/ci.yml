@@ -21,11 +21,14 @@ jobs:
       - name: Unit tests (no Snowflake, no API key)
         run: python -m pytest tests/ -v -m "not snowflake"
 
-      - name: Smoke test — rule engine on CI fixture
+      - name: Smoke test — profile + rule-engine map on CI fixture
         run: |
-          python -m schema_inference map \
+          python -m schema_inference profile \
             examples/insurance/test_data/pasl_policy.dat \
             --source-name pasl
+          python -m schema_inference map \
+            schema_inference/registry/pasl/profile_pasl_policy.json \
+            --table-name pasl_policy --no-llm
 
       - name: Score against ground truth (PAS-L)
         run: |

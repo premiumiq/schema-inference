@@ -30,14 +30,23 @@ cp .env.example .env        # fill in ANTHROPIC_API_KEY (and Snowflake creds if 
 
 ## Quickstart
 
+`map` always takes a profile JSON (produced by `profile`), not a raw source file —
+it's a two-step `profile` → `map` pipeline.
+
 ```bash
-# Rule engine only — no API key
-python -m schema_inference map examples/insurance/test_data/pasl_policy.dat \
+# 1. Profile the source file (writes registry/{source}/profile_{table}.json)
+python -m schema_inference profile examples/insurance/test_data/pasl_policy.dat \
   --source-name pasl
 
-# Full agent run
-python -m schema_inference map examples/insurance/test_data/pasl_policy_sample.dat \
-  --source-name pasl --agent --eval
+# 2a. Rule engine only — no API key
+python -m schema_inference map schema_inference/registry/pasl/profile_pasl_policy.json \
+  --table-name pasl_policy --no-llm
+
+# 2b. Full agent run
+python -m schema_inference profile examples/insurance/test_data/pasl_policy_sample.dat \
+  --source-name pasl
+python -m schema_inference map schema_inference/registry/pasl/profile_pasl_policy_sample.json \
+  --table-name pasl_policy_sample --agent --eval
 
 # Score against ground truth
 python scripts/score_mappings.py \
@@ -59,7 +68,10 @@ See `examples/insurance/README.md` for the full three-tier data quickstart
 Set `SCHEMA_INFERENCE_CATALOG_DIR` to point at your own ground truth catalogs:
 ```bash
 SCHEMA_INFERENCE_CATALOG_DIR=/path/to/your/ground_truth \
-  python -m schema_inference map your_source.dat --source-name your_source
+  python -m schema_inference profile your_source.dat --source-name your_source
+SCHEMA_INFERENCE_CATALOG_DIR=/path/to/your/ground_truth \
+  python -m schema_inference map schema_inference/registry/your_source/profile_your_source.json \
+  --table-name your_source
 ```
 
 ## Tests
