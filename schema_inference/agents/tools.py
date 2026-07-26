@@ -28,9 +28,8 @@ from ..models import ColumnProfile
 # ─── Catalog file locations (repo-root/ground_truth/) ─────────────────────────
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_CATALOG_DIR = os.environ.get(
-    "SCHEMA_INFERENCE_CATALOG_DIR",
-    os.path.join(_REPO_ROOT, "examples", "insurance", "ground_truth"),
+_CATALOG_DIR = os.environ.get("SCHEMA_INFERENCE_CATALOG_DIR") or os.path.join(
+    _REPO_ROOT, "examples", "insurance", "ground_truth"
 )
 _VALUE_CATALOG_PATH = os.path.join(_CATALOG_DIR, "pasl_value_catalog.json")
 _SCHEMA_CATALOG_PATH = os.path.join(_CATALOG_DIR, "pasl_schema_catalog.yml")

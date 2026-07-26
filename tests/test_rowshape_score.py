@@ -5,7 +5,7 @@ from score_mappings import _score_row_shape, _print_row_shape
 from schema_inference.models import SchemaProfile
 from schema_inference.agents.row_shape_agent import infer_row_shape
 
-catalog = yaml.safe_load(open("ground_truth/pasl_schema_catalog.yml", encoding="utf-8"))
+catalog = yaml.safe_load(open("examples/insurance/ground_truth/pasl_schema_catalog.yml", encoding="utf-8"))
 gt = catalog.get("row_shape")
 
 p = SchemaProfile.model_validate_json(

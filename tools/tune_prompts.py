@@ -76,10 +76,8 @@ from schema_inference.profiler import profile_file
 import score_mappings as scorer
 
 GROUND_TRUTH_DIR = Path(
-    __import__("os").environ.get(
-        "SCHEMA_INFERENCE_CATALOG_DIR",
-        str(_REPO_ROOT / "examples" / "insurance" / "ground_truth"),
-    )
+    __import__("os").environ.get("SCHEMA_INFERENCE_CATALOG_DIR")
+    or str(_REPO_ROOT / "examples" / "insurance" / "ground_truth")
 )
 DEFAULT_DATA_FILE = {
     "pasl": _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasl_policy.dat",

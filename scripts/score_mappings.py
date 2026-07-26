@@ -57,8 +57,8 @@ for _stream in (sys.stdout, sys.stderr):
 # ── Ground truth loaders ──────────────────────────────────────────────────────
 
 GROUND_TRUTH_DIR = Path(
-    os.environ.get("SCHEMA_INFERENCE_CATALOG_DIR",
-                   str(_REPO_ROOT / "examples" / "insurance" / "ground_truth"))
+    os.environ.get("SCHEMA_INFERENCE_CATALOG_DIR")
+    or str(_REPO_ROOT / "examples" / "insurance" / "ground_truth")
 )
 DEFAULT_SOURCE_NAME = "pasl"
 
