@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Unit tests (no Snowflake, no API key)
+        run: python -m pytest tests/ -v -m "not snowflake"
+
+      - name: Smoke test — rule engine on CI fixture
+        run: |
+          python -m schema_inference map \
+            examples/insurance/test_data/pasl_policy.dat \
+            --source-name pasl
+
+      - name: Score against ground truth (PAS-L)
+        run: |
+          python scripts/score_mappings.py \
+            schema_inference/registry/pasl/proposal_pasl_snowflake.json \
+            --source-name pasl
+
+      - name: Layer 0 tune dry-run (PAS-L)
+        run: |
+          python tools/tune_rule_weights.py \
+            --source-name pasl \
+            --data-file examples/insurance/test_data/pasl_policy.dat

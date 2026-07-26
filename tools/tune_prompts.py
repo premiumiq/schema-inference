@@ -75,10 +75,15 @@ from schema_inference.profiler import profile_file
 
 import score_mappings as scorer
 
-GROUND_TRUTH_DIR = _REPO_ROOT / "ground_truth"
+GROUND_TRUTH_DIR = Path(
+    __import__("os").environ.get(
+        "SCHEMA_INFERENCE_CATALOG_DIR",
+        str(_REPO_ROOT / "examples" / "insurance" / "ground_truth"),
+    )
+)
 DEFAULT_DATA_FILE = {
-    "pasl": _REPO_ROOT / "schema_inference" / "test_data" / "pasl_policy.dat",
-    "pasm": _REPO_ROOT / "schema_inference" / "test_data" / "pasm_policy.dat",
+    "pasl": _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasl_policy.dat",
+    "pasm": _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasm_policy.dat",
 }
 
 # Diff-size guardrail: candidate must differ from current (ratio <= MAX) but

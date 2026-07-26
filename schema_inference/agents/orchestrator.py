@@ -37,7 +37,13 @@ from .mapping_agent import run_mapping_agent
 import yaml
 from pathlib import Path
 
-_SCHEMA_CATALOG_PATH = Path(__file__).parent.parent.parent / "ground_truth" / "pasl_schema_catalog.yml"
+_CATALOG_DIR = Path(
+    __import__("os").environ.get(
+        "SCHEMA_INFERENCE_CATALOG_DIR",
+        str(Path(__file__).parent.parent.parent / "examples" / "insurance" / "ground_truth"),
+    )
+)
+_SCHEMA_CATALOG_PATH = _CATALOG_DIR / "pasl_schema_catalog.yml"
 
 
 def _load_missing_field_names() -> set[str]:

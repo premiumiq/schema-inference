@@ -59,8 +59,8 @@ import score_mappings as scorer  # noqa: E402  (sys.path adjusted above)
 
 AGENT_CONFIG_PATH = _REPO_ROOT / "schema_inference" / "agent_config.yml"
 DEFAULT_DATA_FILE = {
-    "pasl": _REPO_ROOT / "schema_inference" / "test_data" / "pasl_policy.dat",
-    "pasm": _REPO_ROOT / "schema_inference" / "test_data" / "pasm_policy.dat",
+    "pasl": _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasl_policy.dat",
+    "pasm": _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasm_policy.dat",
 }
 
 THRESHOLD_CANDIDATES = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]

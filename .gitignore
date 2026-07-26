@@ -1,0 +1,20 @@
+# metamodel state — generated at runtime, not committed
+schema_inference/metamodel/metamodel.db
+
+# scratch/debug scripts
+show_agent_output.py
+show_schemas.py
+
+# venv / build
+.venv/
+*.egg-info/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# env
+.env
+
+# editor
+.vscode/settings.json

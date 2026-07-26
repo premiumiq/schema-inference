@@ -31,8 +31,8 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = _REPO_ROOT / "schema_inference" / "test_data" / "pasl_policy.dat"
-DEFAULT_OUTPUT = _REPO_ROOT / "schema_inference" / "test_data" / "pasl_policy_schema_drift.dat"
+DEFAULT_INPUT = _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasl_policy.dat"
+DEFAULT_OUTPUT = _REPO_ROOT / "examples" / "insurance" / "test_data" / "pasl_policy_schema_drift.dat"
 
 # Renames target PAS-L's is_hard columns specifically (ground_truth/pasl_schema_catalog.yml)
 # — these are exactly the columns where Layer 1's few-shot bank is supposed to help, so

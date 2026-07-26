@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -55,7 +56,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 # ── Ground truth loaders ──────────────────────────────────────────────────────
 
-GROUND_TRUTH_DIR = _REPO_ROOT / "ground_truth"
+GROUND_TRUTH_DIR = Path(
+    os.environ.get("SCHEMA_INFERENCE_CATALOG_DIR",
+                   str(_REPO_ROOT / "examples" / "insurance" / "ground_truth"))
+)
 DEFAULT_SOURCE_NAME = "pasl"
 
 # Back-compat constant — existing callers (evaluator_agent.py, CI) that pass
