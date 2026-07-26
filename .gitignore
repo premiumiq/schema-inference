@@ -22,5 +22,10 @@ rsa_key.p8
 # local scratch verification output
 scratch_verify/
 
+# generated profile/proposal artifacts not committed as fixtures
+# (schema_inference/registry/pasl/ has committed files - leave that one alone)
+schema_inference/registry/pasm/
+schema_inference/registry/pasm_coverage/
+
 # editor
 .vscode/settings.json
