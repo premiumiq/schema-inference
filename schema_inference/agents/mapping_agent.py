@@ -306,6 +306,7 @@ def run_mapping_agent(
     is_empty_string_null: bool = True,
     concurrency: int = DEFAULT_CONCURRENCY,
     system_prompt_override: str | None = None,
+    canonical_schema: str = "policy",
 ) -> tuple[list[ColumnMapping], list[AgentTrace]]:
     """Public entry point. Map a list of low-confidence columns via the agent loop.
 
@@ -322,12 +323,15 @@ def run_mapping_agent(
                               Only tools/tune_prompts.py's VALIDATE step
                               should pass this (scoring a not-yet-accepted
                               candidate); production callers leave it None.
+        canonical_schema:     which canonical/registry.py schema key the
+                              lookup_canonical/score_name_similarity/generate_sql
+                              tools should search (see canonical/registry.py).
 
     Returns:
         (mappings, traces) — parallel lists.
     """
     # Register profiles so get_column_profile / generate_sql tools can see them
-    register_profiles(all_profiles, is_empty_string_null)
+    register_profiles(all_profiles, is_empty_string_null, source_name=source_name, canonical_schema=canonical_schema)
     system_prompt = system_prompt_override or _active_system_prompt()
     max_tool_calls = _max_tool_calls()
 

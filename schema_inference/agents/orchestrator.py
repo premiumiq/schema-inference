@@ -31,27 +31,25 @@ from ..models import (
     MappingProposal,
     TableProfile,
 )
-from ..canonical.policy import CANONICAL_FIELDS
+from ..canonical import registry as canonical_registry
 from .mapping_agent import run_mapping_agent
 
 import yaml
 from pathlib import Path
 
 _CATALOG_DIR = Path(
-    __import__("os").environ.get(
-        "SCHEMA_INFERENCE_CATALOG_DIR",
-        str(Path(__file__).parent.parent.parent / "examples" / "insurance" / "ground_truth"),
-    )
+    __import__("os").environ.get("SCHEMA_INFERENCE_CATALOG_DIR")
+    or str(Path(__file__).parent.parent.parent / "examples" / "insurance" / "ground_truth")
 )
-_SCHEMA_CATALOG_PATH = _CATALOG_DIR / "pasl_schema_catalog.yml"
 
 
-def _load_missing_field_names() -> set[str]:
-    """Canonical fields the catalog declares have no source column.
+def _load_missing_field_names(source_name: str) -> set[str]:
+    """Canonical fields source_name's catalog declares have no source column.
     Any mapping targeting one of these is a false positive and is suppressed."""
-    if not _SCHEMA_CATALOG_PATH.exists():
+    catalog_path = _CATALOG_DIR / f"{source_name}_schema_catalog.yml"
+    if not catalog_path.exists():
         return set()
-    with open(_SCHEMA_CATALOG_PATH, encoding="utf-8") as f:
+    with open(catalog_path, encoding="utf-8") as f:
         catalog = yaml.safe_load(f) or {}
     return {
         entry["name"]
@@ -128,6 +126,13 @@ def run_mapping(
     if concurrency is None:
         concurrency = load_agent_config().get("mapping_agent", {}).get("concurrent_columns", 10)
 
+    # Resolve the canonical target schema for this table (registry.py falls
+    # back to the default 'policy' schema for any table not explicitly
+    # onboarded — every pre-existing table keeps its old behavior).
+    schema_key = canonical_registry.schema_for_table(table.name)
+    canonical_fields = canonical_registry.get_fields(schema_key)
+    canonical_by_name = canonical_registry.get_by_name(schema_key)
+
     # ── Split off CDC metadata columns (never mapped) ────────────────────────
     business_cols = []
     excluded_metadata: list[str] = []
@@ -141,7 +146,9 @@ def run_mapping(
     # ── Step 1: Rule pass (existing logic, unchanged) ────────────────────────
     rule_results: dict[str, ColumnMapping] = {}
     for col in business_cols:
-        m = _rule_map_column(col, table.is_empty_string_null, source_name=source_name)
+        m = _rule_map_column(
+            col, table.is_empty_string_null, source_name=source_name, canonical_fields=canonical_fields
+        )
         m.source_table = table.name
         rule_results[col.name] = m
 
@@ -165,6 +172,7 @@ def run_mapping(
             is_empty_string_null=table.is_empty_string_null,
             concurrency=concurrency,
             system_prompt_override=mapping_system_prompt,
+            canonical_schema=schema_key,
         )
         for m in agent_mappings:
             agent_results[m.source_column] = m
@@ -196,11 +204,12 @@ def run_mapping(
     if use_agent:
         from .sql_agent import run_sql_agent
         merged, sql_traces = run_sql_agent(
-            merged, profiles_by_name, is_empty_string_null=table.is_empty_string_null
+            merged, profiles_by_name, is_empty_string_null=table.is_empty_string_null,
+            canonical_by_name=canonical_by_name,
         )
-        traces.extend(sql_traces)    
+        traces.extend(sql_traces)
     # ── Suppress targets the catalog declares as unmapped (false-positive guard) ──
-    missing_field_names = _load_missing_field_names()
+    missing_field_names = _load_missing_field_names(source_name)
     if missing_field_names:
         for m in merged:
             if m.target_field in missing_field_names:
@@ -210,17 +219,18 @@ def run_mapping(
                 m.notes = (m.notes + " | " if m.notes else "") + \
                     f"target suppressed: {suppressed} has no source per catalog"
     # ── Dedup + assemble proposal (existing logic) ───────────────────────────
-    final_mappings, contested = _deduplicate(merged)
+    final_mappings, contested = _deduplicate(merged, canonical_by_name=canonical_by_name)
     # ── MAP-3: escalate genuine contests to the critic for a comparison call ──
     if use_agent and contested:
         from .critic_agent import resolve_contests
         final_mappings, contested = resolve_contests(
-            contested, final_mappings, profiles_by_name
+            contested, final_mappings, profiles_by_name,
+            source_name=source_name, canonical_by_name=canonical_by_name,
         )
     unmapped = [m.source_column for m in final_mappings if m.target_field is None]
     mapped_targets = {m.target_field for m in final_mappings if m.target_field}
     missing = [
-        f.name for f in CANONICAL_FIELDS
+        f.name for f in canonical_fields
         if f.required and f.name not in mapped_targets
     ]
 

@@ -1,5 +1,7 @@
 # metamodel state — generated at runtime, not committed
 schema_inference/metamodel/metamodel.db
+schema_inference/metamodel/metamodel.db-shm
+schema_inference/metamodel/metamodel.db-wal
 
 # scratch/debug scripts
 show_agent_output.py
