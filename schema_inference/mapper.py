@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import yaml
 from rapidfuzz import fuzz
 
+from .canonical import registry as canonical_registry
 from .canonical.policy import CANONICAL_BY_NAME, CANONICAL_FIELDS, CANONICAL_NAMES
 from .models import ColumnMapping, ColumnProfile, MappingProposal, TableProfile
 
@@ -45,25 +46,33 @@ LLM_BATCH_SIZE = 20
 DEFAULT_LLM_THRESHOLD = 0.70
 
 # Rule-engine confidence weights (name_sim, type_compat, pattern_bonus).
-# MAP-4 Layer 0 (tools/tune_rule_weights.py) grid-searches these against
-# ground truth and writes the winner into agent_config.yml's rule_engine.weights
-# section. _rule_weights() picks up that override; the hardcoded tuple below
-# is only the fallback when no config override exists.
+# MAP-4 Layer 0 (tools/tune_rule_weights.py) grid-searches these per source
+# and writes the winner into agent_config.yml's rule_engine.weights_by_source
+# section (keyed by source name), falling back to rule_engine.weights for any
+# source without a tuned entry. _rule_weights() picks up both; the hardcoded
+# tuple below is only the fallback when no config override exists at all.
 _DEFAULT_RULE_WEIGHTS = (0.65, 0.25, 0.10)  # name_sim, type_compat, pattern_bonus
 _AGENT_CONFIG_PATH = Path(__file__).parent / "agent_config.yml"
 
 
-@lru_cache(maxsize=1)
-def _rule_weights() -> tuple[float, float, float]:
-    """(name_sim, type_compat, pattern_bonus) weights, from agent_config.yml's
-    rule_engine.weights section if present, else the original hardcoded
-    defaults. Cached per-process — a tuner script that writes a new weights
+@lru_cache(maxsize=None)
+def _rule_weights(source_name: str | None = None) -> tuple[float, float, float]:
+    """(name_sim, type_compat, pattern_bonus) weights for source_name.
+
+    Lookup order: agent_config.yml's rule_engine.weights_by_source[source_name]
+    -> rule_engine.weights (global fallback) -> hardcoded default. Cached
+    per-process per source_name — a tuner script that writes a new weights
     section takes effect on the next process invocation, not within one."""
     if _AGENT_CONFIG_PATH.exists():
         try:
             with open(_AGENT_CONFIG_PATH, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
-            w = (cfg.get("rule_engine") or {}).get("weights")
+            rule_cfg = cfg.get("rule_engine") or {}
+            w = None
+            if source_name:
+                w = (rule_cfg.get("weights_by_source") or {}).get(source_name)
+            if not w:
+                w = rule_cfg.get("weights")
             if w and all(k in w for k in ("name_sim", "type_compat", "pattern_bonus")):
                 return (float(w["name_sim"]), float(w["type_compat"]), float(w["pattern_bonus"]))
         except (yaml.YAMLError, OSError, ValueError, TypeError):
@@ -148,11 +157,12 @@ def _compute_confidence(
     type_compat: float,
     pat_bonus: float,
     weights: tuple[float, float, float] | None = None,
+    source_name: str | None = None,
 ) -> float:
-    """weights=None uses the configured/default weights (_rule_weights()).
-    Tuning code passes an explicit weights tuple to score a candidate
-    without touching agent_config.yml or the cached default."""
-    w1, w2, w3 = weights if weights is not None else _rule_weights()
+    """weights=None uses the configured/default weights for source_name
+    (_rule_weights()). Tuning code passes an explicit weights tuple to score
+    a candidate without touching agent_config.yml or the cached default."""
+    w1, w2, w3 = weights if weights is not None else _rule_weights(source_name)
     return min(1.0, w1 * name_sim + w2 * type_compat + w3 * pat_bonus)
 
 
@@ -237,13 +247,20 @@ def _rule_map_column(
     col: ColumnProfile,
     is_empty_string_null: bool,
     weights: tuple[float, float, float] | None = None,
+    source_name: str | None = None,
+    canonical_fields: "list[CanonicalField] | None" = None,
 ) -> ColumnMapping:
     """Find the best canonical field match for a single column.
 
-    weights=None uses the configured/default rule-engine weights. Passing an
-    explicit tuple (tools/tune_rule_weights.py) re-scores every candidate
-    canonical field under that tuple — necessary because changing the
-    weights can change which field wins, not just the winning score.
+    weights=None uses the configured/default rule-engine weights for
+    source_name. Passing an explicit tuple (tools/tune_rule_weights.py)
+    re-scores every candidate canonical field under that tuple — necessary
+    because changing the weights can change which field wins, not just the
+    winning score.
+
+    canonical_fields=None searches the default 'policy' schema
+    (CANONICAL_FIELDS) — callers with a table-specific schema (see
+    canonical/registry.py) pass it explicitly.
     """
     best_field: "CanonicalField | None" = None
     best_conf = 0.0
@@ -251,11 +268,12 @@ def _rule_map_column(
     best_tcomp = 0.0
     best_pat = 0.0
 
-    for field in CANONICAL_FIELDS:
+    fields = canonical_fields if canonical_fields is not None else CANONICAL_FIELDS
+    for field in fields:
         nsim = _name_similarity(col.name, field)
         tcomp = _type_compatibility(col.inferred_type, field.target_type, col)
         pat = _pattern_bonus(col.name, field)
-        conf = _compute_confidence(nsim, tcomp, pat, weights=weights)
+        conf = _compute_confidence(nsim, tcomp, pat, weights=weights, source_name=source_name)
 
         if conf > best_conf:
             best_conf = conf
@@ -295,12 +313,20 @@ def _run_llm_batch(
     batch: list[ColumnProfile],
     table_name: str,
     delimiter: str,
+    canonical_fields: "list[CanonicalField] | None" = None,
+    canonical_names: frozenset[str] | None = None,
 ) -> list[ColumnMapping]:
-    """Call Claude Haiku for up to LLM_BATCH_SIZE columns. Returns ColumnMapping list."""
+    """Call Claude Haiku for up to LLM_BATCH_SIZE columns. Returns ColumnMapping list.
+
+    canonical_fields/canonical_names=None uses the default 'policy' schema —
+    see canonical/registry.py for table-specific schema resolution."""
     try:
         import anthropic
     except ImportError:
         raise ImportError("anthropic package required for LLM pass. Install: pip install anthropic")
+
+    fields = canonical_fields if canonical_fields is not None else CANONICAL_FIELDS
+    names = canonical_names if canonical_names is not None else CANONICAL_NAMES
 
     canonical_summary = [
         {
@@ -310,7 +336,7 @@ def _run_llm_batch(
             "description": f.description,
             "aliases": f.aliases[:6],
         }
-        for f in CANONICAL_FIELDS
+        for f in fields
     ]
 
     col_data = [
@@ -388,7 +414,7 @@ SQL expression notes:
             continue
 
         raw_target = item.get("target_field")
-        target = raw_target if raw_target in CANONICAL_NAMES else None
+        target = raw_target if raw_target in names else None
 
         # Replace SOURCE_COL placeholder with actual column name
         sql = item.get("sql_expression", src_name).replace("SOURCE_COL", src_name)
@@ -447,6 +473,14 @@ def map_table(
     mappings: list[ColumnMapping] = []
     excluded_metadata: list[str] = []
 
+    # Resolve the canonical target schema for this table (registry.py falls
+    # back to the default 'policy' schema for any table not explicitly
+    # onboarded — every pre-existing table keeps its old behavior).
+    schema_key = canonical_registry.schema_for_table(table.name)
+    fields = canonical_registry.get_fields(schema_key)
+    by_name = canonical_registry.get_by_name(schema_key)
+    names = canonical_registry.get_names(schema_key)
+
     # Separate CDC metadata columns
     business_cols = []
     for col in table.columns:
@@ -458,7 +492,9 @@ def map_table(
     # Rule-based pass
     rule_results: dict[str, ColumnMapping] = {}
     for col in business_cols:
-        m = _rule_map_column(col, table.is_empty_string_null)
+        m = _rule_map_column(
+            col, table.is_empty_string_null, source_name=source_name, canonical_fields=fields
+        )
         m.source_table = table.name
         rule_results[col.name] = m
 
@@ -473,7 +509,9 @@ def map_table(
     if use_llm and llm_candidates:
         for i in range(0, len(llm_candidates), LLM_BATCH_SIZE):
             batch = llm_candidates[i : i + LLM_BATCH_SIZE]
-            batch_results = _run_llm_batch(batch, table.name, table.delimiter)
+            batch_results = _run_llm_batch(
+                batch, table.name, table.delimiter, canonical_fields=fields, canonical_names=names
+            )
             for r in batch_results:
                 r.source_table = table.name
                 llm_results[r.source_column] = r
@@ -490,13 +528,13 @@ def map_table(
     # Separate mapped vs unmapped
     unmapped = [m.source_column for m in mappings if m.target_field is None]
     # De-duplicate: if two source cols map to the same target, keep higher confidence
-    final_mappings, contested = _deduplicate(mappings)
+    final_mappings, contested = _deduplicate(mappings, canonical_by_name=by_name)
 
     # Missing required fields
     mapped_targets = {m.target_field for m in final_mappings if m.target_field}
     missing = [
         f.name
-        for f in CANONICAL_FIELDS
+        for f in fields
         if f.required and f.name not in mapped_targets
     ]
 
@@ -523,6 +561,7 @@ TIE_EPSILON = 0.05
 
 def _deduplicate(
     mappings: list[ColumnMapping],
+    canonical_by_name: "dict[str, CanonicalField] | None" = None,
 ) -> tuple[list[ColumnMapping], list[dict]]:
     """Resolve multiple source columns mapping to the same target (MAP-3).
 
@@ -532,8 +571,11 @@ def _deduplicate(
         secondary field (both legitimately map).
       - Near-tie with no secondary escape: collect as a contest for the critic /
         reviewer; provisionally keep the higher-confidence one but flag it.
+
+    canonical_by_name=None uses the default 'policy' schema — callers with a
+    table-specific schema (see canonical/registry.py) pass it explicitly.
     """
-    from .canonical.policy import CANONICAL_BY_NAME
+    by_name = canonical_by_name if canonical_by_name is not None else CANONICAL_BY_NAME
 
     no_target: list[ColumnMapping] = [m for m in mappings if m.target_field is None]
     targeted = [m for m in mappings if m.target_field is not None]
@@ -567,7 +609,7 @@ def _deduplicate(
             continue
 
         # ── Near-tie ────────────────────────────────────────────────────────
-        field = CANONICAL_BY_NAME.get(target)
+        field = by_name.get(target)
         secondary = field.secondary_target if field else None
 
         if secondary:

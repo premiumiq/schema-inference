@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "schema-inference"
@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "rapidfuzz>=3.0",
+    "rich>=13.7.0",
     "snowflake-connector-python>=3.0",
 ]
 

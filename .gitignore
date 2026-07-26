@@ -1,5 +1,7 @@
 # metamodel state — generated at runtime, not committed
 schema_inference/metamodel/metamodel.db
+schema_inference/metamodel/metamodel.db-shm
+schema_inference/metamodel/metamodel.db-wal
 
 # scratch/debug scripts
 show_agent_output.py
@@ -15,6 +17,15 @@ __pycache__/
 
 # env
 .env
+rsa_key.p8
+
+# local scratch verification output
+scratch_verify/
+
+# generated profile/proposal artifacts not committed as fixtures
+# (schema_inference/registry/pasl/ has committed files - leave that one alone)
+schema_inference/registry/pasm/
+schema_inference/registry/pasm_coverage/
 
 # editor
 .vscode/settings.json

@@ -21,39 +21,47 @@ from functools import lru_cache
 import yaml
 from rapidfuzz import fuzz
 
-from ..canonical.policy import CANONICAL_BY_NAME, CANONICAL_FIELDS
+from ..canonical import registry as canonical_registry
 from ..mapper import _generate_sql, _name_similarity
 from ..models import ColumnProfile
 
 # ─── Catalog file locations (repo-root/ground_truth/) ─────────────────────────
+# Catalogs are per-source (pasl_*, pasm_*, ...) — which one to load is driven by
+# the _SOURCE_NAME_VAR context set by register_profiles(), NOT hardcoded, so
+# these tools return the right source's data instead of always PAS-L's.
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_CATALOG_DIR = os.environ.get(
-    "SCHEMA_INFERENCE_CATALOG_DIR",
-    os.path.join(_REPO_ROOT, "examples", "insurance", "ground_truth"),
+_CATALOG_DIR = os.environ.get("SCHEMA_INFERENCE_CATALOG_DIR") or os.path.join(
+    _REPO_ROOT, "examples", "insurance", "ground_truth"
 )
-_VALUE_CATALOG_PATH = os.path.join(_CATALOG_DIR, "pasl_value_catalog.json")
-_SCHEMA_CATALOG_PATH = os.path.join(_CATALOG_DIR, "pasl_schema_catalog.yml")
 
 
-@lru_cache(maxsize=1)
-def _load_value_catalog() -> dict:
-    """Load the value catalog once. Returns the full dict (keys: version, source, table, columns)."""
-    with open(_VALUE_CATALOG_PATH, encoding="utf-8") as f:
+@lru_cache(maxsize=8)
+def _load_value_catalog(source_name: str) -> dict:
+    """Load source_name's value catalog once. Returns the full dict (keys:
+    version, source, table, columns), or {} if this source has none yet."""
+    path = os.path.join(_CATALOG_DIR, f"{source_name}_value_catalog.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-@lru_cache(maxsize=1)
-def _load_schema_catalog() -> dict:
-    """Load the schema catalog (scoring answer key). Used ONLY for get_hard_columns —
-    never to read canonical_target (that would leak the answer to the agent)."""
-    with open(_SCHEMA_CATALOG_PATH, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+@lru_cache(maxsize=8)
+def _load_schema_catalog(source_name: str) -> dict:
+    """Load source_name's schema catalog (scoring answer key), or {} if this
+    source has none yet. Used ONLY for get_hard_columns — never to read
+    canonical_target (that would leak the answer to the agent)."""
+    path = os.path.join(_CATALOG_DIR, f"{source_name}_schema_catalog.yml")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
-# ─── Module-level registry of column profiles for the current run ─────────────
-# The orchestrator populates this before invoking agents so get_column_profile
-# and generate_sql can look up the live profile by column name.
+# ─── Module-level registry of run-scoped state ─────────────────────────────────
+# The orchestrator populates this before invoking agents so get_column_profile,
+# generate_sql, lookup_canonical etc. can look up the live run's data.
 
 import contextvars
 
@@ -64,13 +72,25 @@ _COLUMN_PROFILES_VAR: contextvars.ContextVar[dict[str, ColumnProfile]] = \
     contextvars.ContextVar("column_profiles", default={})
 _IS_EMPTY_STRING_NULL_VAR: contextvars.ContextVar[bool] = \
     contextvars.ContextVar("is_empty_string_null", default=True)
+_SOURCE_NAME_VAR: contextvars.ContextVar[str] = \
+    contextvars.ContextVar("source_name", default="pasl")
+_CANONICAL_SCHEMA_VAR: contextvars.ContextVar[str] = \
+    contextvars.ContextVar("canonical_schema", default=canonical_registry.DEFAULT_SCHEMA)
 
 
-def register_profiles(columns: list[ColumnProfile], is_empty_string_null: bool = True) -> None:
-    """Called by the orchestrator before the agent loop. Stores profiles for tool
-    lookups in a context-local variable (safe under concurrency)."""
+def register_profiles(
+    columns: list[ColumnProfile],
+    is_empty_string_null: bool = True,
+    source_name: str = "pasl",
+    canonical_schema: str = canonical_registry.DEFAULT_SCHEMA,
+) -> None:
+    """Called by the orchestrator before the agent loop. Stores profiles and
+    run context for tool lookups in context-local variables (safe under
+    concurrency)."""
     _COLUMN_PROFILES_VAR.set({c.name: c for c in columns})
     _IS_EMPTY_STRING_NULL_VAR.set(is_empty_string_null)
+    _SOURCE_NAME_VAR.set(source_name)
+    _CANONICAL_SCHEMA_VAR.set(canonical_schema)
 
 
 # ─── Tool 1: lookup_canonical ─────────────────────────────────────────────────
@@ -85,7 +105,7 @@ def lookup_canonical(query: str) -> list[dict]:
     """
     scored = []
     q = query.lower().replace("_", " ")
-    for field in CANONICAL_FIELDS:
+    for field in canonical_registry.get_fields(_CANONICAL_SCHEMA_VAR.get()):
         best = 0.0
         for name in field.all_names():
             tgt = name.lower().replace("_", " ")
@@ -115,7 +135,7 @@ def check_value_catalog(column_name: str) -> dict | None:
     and any seeded defects. This is the agent's reference for hard columns
     (e.g. discovering ANNU_PREM_AMT is integer_cents before mapping it).
     """
-    catalog = _load_value_catalog()
+    catalog = _load_value_catalog(_SOURCE_NAME_VAR.get())
     return catalog.get("columns", {}).get(column_name)
 
 
@@ -127,7 +147,7 @@ def score_name_similarity(source: str, target: str) -> float:
     Wraps the existing _name_similarity logic from mapper.py so the agent uses the
     same scoring the rule engine does.
     """
-    field = CANONICAL_BY_NAME.get(target)
+    field = canonical_registry.get_by_name(_CANONICAL_SCHEMA_VAR.get()).get(target)
     if field is None:
         # target not a known canonical field; fall back to raw string compare
         s = source.lower().replace("_", " ")
@@ -151,7 +171,7 @@ def get_hard_columns() -> list[str]:
 
     NOTE: reads only the is_hard flag, never canonical_target (which is the answer key).
     """
-    catalog = _load_schema_catalog()
+    catalog = _load_schema_catalog(_SOURCE_NAME_VAR.get())
     cols = catalog.get("columns", {})
     return [name for name, meta in cols.items() if meta and meta.get("is_hard") is True]
 
@@ -164,7 +184,7 @@ def generate_sql(column_name: str, target_field: str, col_profile: dict | None =
     Wraps the existing _generate_sql from mapper.py. Uses the registered live
     profile if col_profile is not supplied.
     """
-    field = CANONICAL_BY_NAME.get(target_field)
+    field = canonical_registry.get_by_name(_CANONICAL_SCHEMA_VAR.get()).get(target_field)
     if field is None:
         return column_name  # no known target; passthrough
 

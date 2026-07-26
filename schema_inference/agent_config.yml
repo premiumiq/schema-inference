@@ -4,9 +4,11 @@
 # Rule-engine confidence weights — name_sim, type_compat, pattern_bonus must
 # sum to 1.0. These are the values mapper.py's _compute_confidence() reads by
 # default (mapper.py:_DEFAULT_RULE_WEIGHTS is the fallback if this section is
-# ever removed). MAP-4 Layer 0 (tools/tune_rule_weights.py --apply) overwrites
-# this section after a grid search against ground truth — see the before/after
-# loss it prints, and the matching loss_runs row in the metamodel store.
+# ever removed). `weights` is the global fallback for any source without a
+# tuned entry below; `weights_by_source.<source>` overrides it per source so
+# tuning one source (MAP-4 Layer 0, tools/tune_rule_weights.py --apply) never
+# clobbers another's — see the before/after loss it prints, and the matching
+# loss_runs row in the metamodel store.
 # Process-wide pacer + retry for every live Anthropic call (mapping/critic/sql
 # agents, tools/tune_prompts.py) — see schema_inference/agents/throttle.py.
 # Anthropic's org-level rate limit is enforced server-side and shared across
@@ -19,9 +21,18 @@ rate_limit:
 
 rule_engine:
   weights:
-    name_sim: 0.1500
-    type_compat: 0.2000
-    pattern_bonus: 0.6500
+    name_sim: 0.6500
+    type_compat: 0.2500
+    pattern_bonus: 0.1000
+  weights_by_source:
+    pasm:
+      name_sim: 0.5000
+      type_compat: 0.3500
+      pattern_bonus: 0.1500
+    pasl:
+      name_sim: 0.1500
+      type_compat: 0.2000
+      pattern_bonus: 0.6500
 
 mapping_agent:
   model: claude-haiku-4-5-20251001

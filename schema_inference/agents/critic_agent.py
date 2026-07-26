@@ -23,7 +23,7 @@ from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..canonical.policy import CANONICAL_BY_NAME
 from ..models import AgentTrace, ColumnMapping
 from .throttle import call_with_retry
-from .tools import _SCHEMA_CATALOG_PATH, check_value_catalog
+from .tools import _CATALOG_DIR, check_value_catalog
 
 MODEL = "claude-sonnet-4-6"
 
@@ -79,11 +79,15 @@ def _active_system_prompt() -> str:
         store.close()
 
 
-def _load_catalog_notes() -> dict:
-    """Load the schema catalog but expose ONLY the notes + is_hard + confidence_floor.
-    Never expose canonical_target (the answer)."""
-    with open(_SCHEMA_CATALOG_PATH, encoding="utf-8") as f:
-        catalog = yaml.safe_load(f)
+def _load_catalog_notes(source_name: str) -> dict:
+    """Load source_name's schema catalog but expose ONLY the notes + is_hard +
+    confidence_floor. Never expose canonical_target (the answer)."""
+    import os
+    path = os.path.join(_CATALOG_DIR, f"{source_name}_schema_catalog.yml")
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        catalog = yaml.safe_load(f) or {}
     safe = {}
     for col, meta in catalog.get("columns", {}).items():
         if not meta:
@@ -136,7 +140,7 @@ def run_critic_agent(
 
     system_prompt = system_prompt_override or _active_system_prompt()
 
-    catalog_notes = _load_catalog_notes()
+    catalog_notes = _load_catalog_notes(source_name)
     targets = _select_targets(mappings, catalog_notes)
 
     if not targets:
@@ -276,6 +280,8 @@ def resolve_contests(
     contests: list[dict],
     mappings: list[ColumnMapping],
     profiles_by_name: dict,
+    source_name: str = "pasl",
+    canonical_by_name: dict | None = None,
 ) -> tuple[list[ColumnMapping], list[dict]]:
     """MAP-3: send each genuine contest to the critic as a comparison decision.
 
@@ -284,6 +290,9 @@ def resolve_contests(
     the mappings accordingly. Contests the critic can't resolve stay in the
     returned list for human review.
 
+    canonical_by_name=None uses the default 'policy' schema — callers with a
+    table-specific schema (see canonical/registry.py) pass it explicitly.
+
     Returns (updated_mappings, unresolved_contests).
     """
     if not contests:
@@ -291,6 +300,7 @@ def resolve_contests(
 
     import anthropic
 
+    by_name = canonical_by_name if canonical_by_name is not None else CANONICAL_BY_NAME
     client = anthropic.Anthropic()
     by_col = {m.source_column: m for m in mappings}
     unresolved: list[dict] = []
@@ -300,8 +310,8 @@ def resolve_contests(
         competing = contest["competing_columns"]
 
         # Build the comparison payload
-        field = CANONICAL_BY_NAME.get(target)
-        note = _load_catalog_notes().get(target, {}).get("note", "") if field else ""
+        field = by_name.get(target)
+        note = _load_catalog_notes(source_name).get(target, {}).get("note", "") if field else ""
         candidates = []
         for col in competing:
             prof = profiles_by_name.get(col)

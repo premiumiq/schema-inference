@@ -1,0 +1,1136 @@
+{
+  "source_name": "pasl",
+  "tables": [
+    {
+      "name": "pasl_policy",
+      "row_count": 12,
+      "columns": [
+        {
+          "name": "POL_NO",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "2746317214",
+            "7574149615",
+            "9489760431",
+            "1137651679",
+            "4974249675",
+            "0540137297",
+            "7987073218",
+            "1067970821",
+            "7380507339",
+            "5435772946"
+          ],
+          "value_distribution": {
+            "2746317214": 1,
+            "7574149615": 1,
+            "9489760431": 1,
+            "1137651679": 1,
+            "4974249675": 1
+          },
+          "date_format": null,
+          "is_id_column": true,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "POL_NO_SEQ",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 2,
+          "sample_values": [
+            "00",
+            "01",
+            "00",
+            "00",
+            "00",
+            "00",
+            "01",
+            "00",
+            "01",
+            "00"
+          ],
+          "value_distribution": {
+            "00": 9,
+            "01": 3
+          },
+          "date_format": null,
+          "is_id_column": true,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "EFF_DT",
+          "inferred_type": "date",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "20250508",
+            "20200704",
+            "20251121",
+            "20250918",
+            "20251209",
+            "20240309",
+            "20240409",
+            "00000000",
+            "20210507",
+            "20251110"
+          ],
+          "value_distribution": {
+            "20250508": 1,
+            "20200704": 1,
+            "20251121": 1,
+            "20250918": 1,
+            "20251209": 1
+          },
+          "date_format": "YYYYMMDD",
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "EXP_DT",
+          "inferred_type": "date",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "20260508",
+            "20210704",
+            "20261121",
+            "20260918",
+            "20261209",
+            "20250309",
+            "20250409",
+            "20250805",
+            "20220507",
+            "20261110"
+          ],
+          "value_distribution": {
+            "20260508": 1,
+            "20210704": 1,
+            "20261121": 1,
+            "20260918": 1,
+            "20261209": 1
+          },
+          "date_format": "YYYYMMDD",
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "TERM_EFF_DT",
+          "inferred_type": "date",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "20250508",
+            "20200704",
+            "20251121",
+            "20250918",
+            "20251209",
+            "20240309",
+            "20240409",
+            "00000000",
+            "20210507",
+            "20251110"
+          ],
+          "value_distribution": {
+            "20250508": 1,
+            "20200704": 1,
+            "20251121": 1,
+            "20250918": 1,
+            "20251209": 1
+          },
+          "date_format": "YYYYMMDD",
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_NM",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "Robert Brown",
+            "Susan Rodriguez",
+            "Jennifer Davis",
+            "Sarah Taylor",
+            "Jennifer Brown",
+            "Sarah Miller",
+            "Michael Jones",
+            "Jennifer Rodriguez",
+            "Mary Martinez",
+            "wILLIAM wILLIAMS"
+          ],
+          "value_distribution": {
+            "Robert Brown": 1,
+            "Susan Rodriguez": 1,
+            "Jennifer Davis": 1,
+            "Sarah Taylor": 1,
+            "Jennifer Brown": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_ADDR",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "9675 Main St",
+            "8786 Main St",
+            "9126 Main St",
+            "8349 Main St",
+            "2505 Main St",
+            "6538 Main St",
+            "3982 Main St",
+            "7261 Main St",
+            "8239 Main St",
+            "1201 Main St"
+          ],
+          "value_distribution": {
+            "9675 Main St": 1,
+            "8786 Main St": 1,
+            "9126 Main St": 1,
+            "8349 Main St": 1,
+            "2505 Main St": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_CITY",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 6,
+          "sample_values": [
+            "Madison",
+            "Riverside",
+            "Clinton",
+            "Arlington",
+            "Salem",
+            "Salem",
+            "Arlington",
+            "Riverside",
+            "Franklin",
+            "Clinton"
+          ],
+          "value_distribution": {
+            "Clinton": 3,
+            "Arlington": 3,
+            "Riverside": 2,
+            "Salem": 2,
+            "Madison": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_ST",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 9,
+          "sample_values": [
+            "AL",
+            "TX",
+            "NY",
+            "AK",
+            "AZ",
+            "OH",
+            "TX",
+            "AL",
+            "AL",
+            "IL"
+          ],
+          "value_distribution": {
+            "AL": 3,
+            "TX": 2,
+            "NY": 1,
+            "AK": 1,
+            "AZ": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_ZIP",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "13905",
+            "20328",
+            "17331",
+            "16175",
+            "80697",
+            "77839",
+            "34957",
+            "95477",
+            "76562",
+            "44760"
+          ],
+          "value_distribution": {
+            "13905": 1,
+            "20328": 1,
+            "17331": 1,
+            "16175": 1,
+            "80697": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "INS_SSN_LAST4",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "1535",
+            "9044",
+            "3752",
+            "1796",
+            "8689",
+            "7397",
+            "1545",
+            "8856",
+            "1312",
+            "2170"
+          ],
+          "value_distribution": {
+            "1535": 1,
+            "9044": 1,
+            "3752": 1,
+            "1796": 1,
+            "8689": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "PROD_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 4,
+          "sample_values": [
+            "PA",
+            "PA",
+            "HO3",
+            "PAP",
+            "PA",
+            "HO5",
+            "PA",
+            "PAP",
+            "PAP",
+            "PAP"
+          ],
+          "value_distribution": {
+            "PA": 5,
+            "PAP": 5,
+            "HO3": 1,
+            "HO5": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "POL_STAT_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 4,
+          "sample_values": [
+            "X",
+            "L",
+            "A",
+            "A",
+            "L",
+            "C",
+            "X",
+            "A",
+            "A",
+            "A"
+          ],
+          "value_distribution": {
+            "A": 6,
+            "X": 3,
+            "L": 2,
+            "C": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "WRTG_AGT",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "AGY224",
+            "AGY301",
+            "AGY842",
+            "AGY157",
+            "AGY941",
+            "AGY124",
+            "AGY100",
+            "AGY857",
+            "AGY872",
+            "AGY956"
+          ],
+          "value_distribution": {
+            "AGY224": 1,
+            "AGY301": 1,
+            "AGY842": 1,
+            "AGY157": 1,
+            "AGY941": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "AGCY_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "AGY239",
+            "AGY850",
+            "AGY033",
+            "AGY643",
+            "AGY001",
+            "AGY254",
+            "AGY675",
+            "AGY016",
+            "AGY191",
+            "AGY358"
+          ],
+          "value_distribution": {
+            "AGY239": 1,
+            "AGY850": 1,
+            "AGY033": 1,
+            "AGY643": 1,
+            "AGY001": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "CHNL_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 4,
+          "sample_values": [
+            "AGENT",
+            "BROKER",
+            "BROKER",
+            "DIRECT",
+            "BROKER",
+            "DIRECT",
+            "AFFINITY",
+            "AGENT",
+            "AGENT",
+            "AGENT"
+          ],
+          "value_distribution": {
+            "AGENT": 4,
+            "BROKER": 4,
+            "DIRECT": 2,
+            "AFFINITY": 2
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "REGN_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 5,
+          "sample_values": [
+            "W",
+            "W",
+            "SW",
+            "SW",
+            "SW",
+            "NE",
+            "MW",
+            "SE",
+            "W",
+            "SE"
+          ],
+          "value_distribution": {
+            "W": 4,
+            "SW": 3,
+            "NE": 2,
+            "SE": 2,
+            "MW": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "UW_TIER",
+          "inferred_type": "string",
+          "null_rate": 0.0,
+          "distinct_count": 3,
+          "sample_values": [
+            "T1",
+            "T1",
+            "T2",
+            "T3",
+            "T1",
+            "T2",
+            "T2",
+            "T1",
+            "T1",
+            "T2"
+          ],
+          "value_distribution": {
+            "T1": 6,
+            "T2": 4,
+            "T3": 2
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ANNU_PREM_AMT",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "1922427",
+            "3061337",
+            "648967",
+            "2254036",
+            "4249220",
+            "4476448",
+            "4121951",
+            "3588999",
+            "540593",
+            "3885477"
+          ],
+          "value_distribution": {
+            "1922427": 1,
+            "3061337": 1,
+            "648967": 1,
+            "2254036": 1,
+            "4249220": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "MNTHLY_PREM_AMT",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "160202",
+            "255111",
+            "54081",
+            "187836",
+            "354102",
+            "373037",
+            "343496",
+            "299083",
+            "45049",
+            "323790"
+          ],
+          "value_distribution": {
+            "160202": 1,
+            "255111": 1,
+            "54081": 1,
+            "187836": 1,
+            "354102": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_A_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "46570403",
+            "14667767",
+            "14441842",
+            "14263272",
+            "17507315",
+            "11411585",
+            "37588606",
+            "37273985",
+            "25784266",
+            "29125180"
+          ],
+          "value_distribution": {
+            "46570403": 1,
+            "14667767": 1,
+            "14441842": 1,
+            "14263272": 1,
+            "17507315": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_A_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 3,
+          "sample_values": [
+            "100000",
+            "50000",
+            "50000",
+            "100000",
+            "100000",
+            "250000",
+            "100000",
+            "100000",
+            "100000",
+            "50000"
+          ],
+          "value_distribution": {
+            "100000": 6,
+            "50000": 5,
+            "250000": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_B_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "1924594",
+            "3773539",
+            "4829970",
+            "2600627",
+            "4685626",
+            "3323315",
+            "4623193",
+            "3018963",
+            "1502840",
+            "2837879"
+          ],
+          "value_distribution": {
+            "1924594": 1,
+            "3773539": 1,
+            "4829970": 1,
+            "2600627": 1,
+            "4685626": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_B_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 1,
+          "sample_values": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "value_distribution": {
+            "0": 12
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_C_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "20072954",
+            "12646997",
+            "24031404",
+            "24994697",
+            "15318461",
+            "12721369",
+            "6817683",
+            "12172169",
+            "24115134",
+            "23227370"
+          ],
+          "value_distribution": {
+            "20072954": 1,
+            "12646997": 1,
+            "24031404": 1,
+            "24994697": 1,
+            "15318461": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_C_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 3,
+          "sample_values": [
+            "100000",
+            "50000",
+            "100000",
+            "50000",
+            "0",
+            "100000",
+            "100000",
+            "50000",
+            "0",
+            "100000"
+          ],
+          "value_distribution": {
+            "100000": 5,
+            "0": 4,
+            "50000": 3
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_D_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 12,
+          "sample_values": [
+            "4333632",
+            "2669343",
+            "4639709",
+            "6438532",
+            "2485911",
+            "3847317",
+            "7481581",
+            "9570239",
+            "6856325",
+            "4537697"
+          ],
+          "value_distribution": {
+            "4333632": 1,
+            "2669343": 1,
+            "4639709": 1,
+            "6438532": 1,
+            "2485911": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_D_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 1,
+          "sample_values": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "value_distribution": {
+            "0": 12
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_E_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 2,
+          "sample_values": [
+            "10000000",
+            "10000000",
+            "10000000",
+            "30000000",
+            "10000000",
+            "10000000",
+            "10000000",
+            "10000000",
+            "10000000",
+            "10000000"
+          ],
+          "value_distribution": {
+            "10000000": 9,
+            "30000000": 3
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_E_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 1,
+          "sample_values": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "value_distribution": {
+            "0": 12
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_F_LIM",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 2,
+          "sample_values": [
+            "100000",
+            "100000",
+            "500000",
+            "100000",
+            "100000",
+            "100000",
+            "100000",
+            "100000",
+            "100000",
+            "500000"
+          ],
+          "value_distribution": {
+            "100000": 9,
+            "500000": 3
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "COV_F_DED",
+          "inferred_type": "integer",
+          "null_rate": 0.0,
+          "distinct_count": 1,
+          "sample_values": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "value_distribution": {
+            "0": 12
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": true
+        },
+        {
+          "name": "ADDL_INS_1_NM",
+          "inferred_type": "string",
+          "null_rate": 0.6667,
+          "distinct_count": 4,
+          "sample_values": [
+            "Richard Rodriguez",
+            "Patricia Rodriguez",
+            "Richard Smith",
+            "Sarah Martinez"
+          ],
+          "value_distribution": {
+            "Richard Rodriguez": 1,
+            "Patricia Rodriguez": 1,
+            "Richard Smith": 1,
+            "Sarah Martinez": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_1_REL",
+          "inferred_type": "string",
+          "null_rate": 0.6667,
+          "distinct_count": 2,
+          "sample_values": [
+            "CH",
+            "PR",
+            "CH",
+            "CH"
+          ],
+          "value_distribution": {
+            "CH": 3,
+            "PR": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_2_NM",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_2_REL",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_3_NM",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_3_REL",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_4_NM",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_4_REL",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_5_NM",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "ADDL_INS_5_REL",
+          "inferred_type": "string",
+          "null_rate": 1.0,
+          "distinct_count": 0,
+          "sample_values": [],
+          "value_distribution": {},
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "PRIOR_CARR_CD",
+          "inferred_type": "string",
+          "null_rate": 0.0833,
+          "distinct_count": 4,
+          "sample_values": [
+            "PRG",
+            "LBM",
+            "PRG",
+            "LBM",
+            "ALF",
+            "ALF",
+            "PRG",
+            "LBM",
+            "STF",
+            "ALF"
+          ],
+          "value_distribution": {
+            "PRG": 3,
+            "LBM": 3,
+            "ALF": 3,
+            "STF": 2
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "RSK_SCR",
+          "inferred_type": "integer",
+          "null_rate": 0.8333,
+          "distinct_count": 2,
+          "sample_values": [
+            "29",
+            "1"
+          ],
+          "value_distribution": {
+            "29": 1,
+            "1": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": false,
+          "is_cents_integer": false
+        },
+        {
+          "name": "WINBK_FLG",
+          "inferred_type": "boolean",
+          "null_rate": 0.0,
+          "distinct_count": 2,
+          "sample_values": [
+            "Y",
+            "N",
+            "Y",
+            "N",
+            "Y",
+            "Y",
+            "Y",
+            "N",
+            "Y",
+            "Y"
+          ],
+          "value_distribution": {
+            "Y": 8,
+            "N": 4
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        },
+        {
+          "name": "CNCL_RSN_CD",
+          "inferred_type": "string",
+          "null_rate": 0.9167,
+          "distinct_count": 1,
+          "sample_values": [
+            "UW"
+          ],
+          "value_distribution": {
+            "UW": 1
+          },
+          "date_format": null,
+          "is_id_column": false,
+          "is_coded_column": true,
+          "is_cents_integer": false
+        }
+      ],
+      "delimiter": "|",
+      "source_file": "pasl_policy.dat",
+      "is_empty_string_null": true
+    }
+  ],
+  "profiled_at": "2026-07-26T12:26:40.629329",
+  "profile_hash": "5a9901ae81f5dba6"
+}

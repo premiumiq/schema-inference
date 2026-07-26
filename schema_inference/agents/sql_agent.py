@@ -70,9 +70,15 @@ def run_sql_agent(
     mappings: list[ColumnMapping],
     profiles_by_name: dict,
     is_empty_string_null: bool = True,
+    canonical_by_name: dict | None = None,
 ) -> tuple[list[ColumnMapping], list[AgentTrace]]:
-    """Finalize SQL for the mappings that need it. Returns (updated_mappings, traces)."""
+    """Finalize SQL for the mappings that need it. Returns (updated_mappings, traces).
+
+    canonical_by_name=None uses the default 'policy' schema — callers with a
+    table-specific schema (see canonical/registry.py) pass it explicitly."""
     import anthropic
+
+    by_name = canonical_by_name if canonical_by_name is not None else CANONICAL_BY_NAME
 
     candidates = [m for m in mappings if _needs_sql_agent(m)]
     if not candidates:
@@ -81,7 +87,7 @@ def run_sql_agent(
     items = []
     for m in candidates:
         prof = profiles_by_name.get(m.source_column)
-        field = CANONICAL_BY_NAME.get(m.target_field)
+        field = by_name.get(m.target_field)
         items.append({
             "source_column": m.source_column,
             "target_field": m.target_field,
@@ -138,7 +144,7 @@ def run_sql_agent(
         # Validate: must be non-empty and reference the column. Else fall back to rule SQL.
         valid = bool(new_sql) and m.source_column in new_sql
         if not valid:
-            field = CANONICAL_BY_NAME.get(m.target_field)
+            field = by_name.get(m.target_field)
             prof = profiles_by_name.get(m.source_column)
             if field and prof:
                 new_sql = _generate_sql(prof, field, is_empty_string_null)

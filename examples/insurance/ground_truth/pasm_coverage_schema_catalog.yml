@@ -1,0 +1,112 @@
+# Ground truth schema catalog for pasm_coverage
+# Used by scripts/score_mappings.py to evaluate schema inference mapping quality.
+#
+# First table onboarded onto a canonical target OTHER than 'policy' (see
+# schema_inference/canonical/registry.py + canonical/pasm_coverage.py). Chosen
+# deliberately as the simplest of PAS-M's non-policy tables: source column names
+# are already near-identical to the target field names (unlike pasl_policy's
+# cryptic mainframe abbreviations), so this is meant to validate the multi-schema
+# plumbing end-to-end rather than stress-test rule-engine recall.
+#
+# canonical_target: the correct field name in canonical/pasm_coverage.py's
+#   CANONICAL_FIELDS, or null (-> extended_attributes)
+# confidence_floor: minimum confidence the mapper should produce for an easy win
+# transformation: the SQL expression used in stg_pasm_coverage.sql (ground truth SQL)
+# is_hard: true when the correct mapping requires domain knowledge or non-obvious transformation
+# notes: explanation of the mapping decision for reviewer display
+
+version: 1
+source: pasm
+table: pasm_coverage
+description: >
+  PAS-M coverage detail — one row per (policy, coverage line). Deduped by
+  (policy_id, coverage_sequence) via CDC latest-record in staging. Amounts
+  already in decimal dollars (no cents conversion, consistent with the rest
+  of PAS-M). No silver-layer model exists yet upstream; stg_pasm_coverage.sql's
+  CAST'd output is the authoritative target shape.
+
+missing_standard_fields: []
+
+columns:
+
+  policy_id:
+    canonical_target: policy_id
+    confidence_floor: 0.85
+    transformation: "CAST(REPLACE(d.policy_id, 'PCM-', '') AS INTEGER)"
+    is_hard: false
+    notes: "PCM-prefixed string ID, exact name match. Same prefix-stripping pattern as pasm_policy."
+
+  coverage_sequence:
+    canonical_target: coverage_seq
+    confidence_floor: 0.55
+    transformation: "CAST(d.coverage_sequence AS INTEGER)"
+    is_hard: false
+    notes: >
+      Only non-exact name in this table (coverage_sequence -> coverage_seq).
+      Listed as an alias on the canonical field; should still resolve to a
+      strong fuzzy-match score, just not a trivial exact-string one.
+
+  coverage_code:
+    canonical_target: coverage_code
+    confidence_floor: 0.85
+    transformation: "d.coverage_code"
+    is_hard: false
+    notes: "Exact name match. Coded coverage type (XS_AUTO, BLDG, etc.)."
+
+  coverage_name:
+    canonical_target: coverage_name
+    confidence_floor: 0.85
+    transformation: "d.coverage_name"
+    is_hard: false
+    notes: "Exact name match. Human-readable coverage label."
+
+  limit_per_occurrence:
+    canonical_target: limit_per_occurrence
+    confidence_floor: 0.80
+    transformation: "CAST(d.limit_per_occurrence AS DECIMAL(14,2))"
+    is_hard: false
+    notes: "Exact name match, decimal dollars already (no cents conversion)."
+
+  limit_aggregate:
+    canonical_target: limit_aggregate
+    confidence_floor: 0.80
+    transformation: "CAST(d.limit_aggregate AS DECIMAL(14,2))"
+    is_hard: false
+    notes: "Exact name match, decimal dollars."
+
+  deductible:
+    canonical_target: deductible
+    confidence_floor: 0.80
+    transformation: "CAST(d.deductible AS DECIMAL(12,2))"
+    is_hard: false
+    notes: "Exact name match, decimal dollars."
+
+  coinsurance_pct:
+    canonical_target: coinsurance_pct
+    confidence_floor: 0.80
+    transformation: "CAST(d.coinsurance_pct AS DECIMAL(5,4))"
+    is_hard: false
+    notes: "Exact name match. Fraction (e.g. 0.0901), not a whole-number percent."
+
+  premium_allocation:
+    canonical_target: premium_allocation
+    confidence_floor: 0.75
+    transformation: "CAST(d.premium_allocation AS DECIMAL(12,2))"
+    is_hard: false
+    notes: "Exact name match, decimal dollars. Portion of policy premium allocated to this coverage line."
+
+  effective_date:
+    canonical_target: effective_date
+    confidence_floor: 0.80
+    transformation: "CAST(d.effective_date AS DATE)"
+    date_format: ISO8601
+    is_hard: false
+    notes: "Exact name match, ISO 8601 string, trivial cast."
+
+  expiration_date:
+    canonical_target: expiration_date
+    confidence_floor: 0.80
+    transformation: "CAST(d.expiration_date AS DATE)"
+    date_format: ISO8601
+    is_hard: false
+    notes: "Exact name match, ISO 8601 string, trivial cast."
