@@ -24,3 +24,9 @@ schema-inference = "schema_inference.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["schema_inference*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "snowflake: requires a live Snowflake connection/credentials",
+    "anthropic: requires ANTHROPIC_API_KEY (live LLM call)",
+]
