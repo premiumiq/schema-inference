@@ -251,6 +251,86 @@ def _f1(precision: float, recall: float) -> float:
         return 0.0
     return 2 * precision * recall / (precision + recall)
 
+# ─── Row shape scoring (MAP-5) ───────────────────────────────────────────────
+
+class RowShapeScore(NamedTuple):
+    natural_key_gt:        list[str]
+    natural_key_proposed:  list[str]
+    natural_key_correct:   bool
+    recency_gt:            str | None
+    recency_proposed:      str | None
+    recency_correct:       bool
+    strategy_gt:           str | None
+    strategy_proposed:     str | None
+    strategy_correct:      bool
+    loss:                  float   # 0.0 = perfect, 1.0 = all three wrong
+
+
+def _score_row_shape(
+    gt_row_shape: dict | None,
+    proposal_row_shape: dict | None,
+) -> RowShapeScore | None:
+    """Score a RowShapeProposal against the catalog's `row_shape` ground truth.
+
+    Returns None when either side is absent (catalog has no row_shape section,
+    or the proposal didn't include one) — row-shape scoring is optional and
+    never blocks column scoring.
+
+    Loss is the weighted fraction wrong: natural key 0.5, recency 0.3,
+    strategy 0.2 — the key matters most since an incorrect partition silently
+    corrupts the dedup regardless of ordering.
+    """
+    if not gt_row_shape or not proposal_row_shape:
+        return None
+
+    gt_key = [c.upper() for c in (gt_row_shape.get("natural_key") or [])]
+    pr_key = [c.upper() for c in (proposal_row_shape.get("natural_key") or [])]
+    key_ok = gt_key == pr_key
+
+    gt_rec = (gt_row_shape.get("recency_column") or None)
+    pr_rec = (proposal_row_shape.get("recency_column") or None)
+    rec_ok = (gt_rec or "").upper() == (pr_rec or "").upper()
+
+    gt_strat = gt_row_shape.get("dedup_strategy")
+    pr_strat = proposal_row_shape.get("dedup_strategy")
+    strat_ok = gt_strat == pr_strat
+
+    loss = 0.0
+    if not key_ok:
+        loss += 0.5
+    if not rec_ok:
+        loss += 0.3
+    if not strat_ok:
+        loss += 0.2
+
+    return RowShapeScore(
+        natural_key_gt=gt_key,
+        natural_key_proposed=pr_key,
+        natural_key_correct=key_ok,
+        recency_gt=gt_rec,
+        recency_proposed=pr_rec,
+        recency_correct=rec_ok,
+        strategy_gt=gt_strat,
+        strategy_proposed=pr_strat,
+        strategy_correct=strat_ok,
+        loss=round(loss, 3),
+    )
+
+
+def _print_row_shape(score: RowShapeScore | None, use_color: bool) -> None:
+    if score is None:
+        return
+    print(_color("  ROW SHAPE INFERENCE (MAP-5)", BOLD, use_color))
+
+    def _line(label: str, gt, proposed, ok: bool) -> None:
+        mark = _color("OK", GREEN, use_color) if ok else _color("MISS", RED, use_color)
+        print(f"    {label:<16} proposed={proposed!s:<28} gt={gt!s:<20} {mark}")
+
+    _line("natural_key", score.natural_key_gt, score.natural_key_proposed, score.natural_key_correct)
+    _line("recency_column", score.recency_gt, score.recency_proposed, score.recency_correct)
+    _line("dedup_strategy", score.strategy_gt, score.strategy_proposed, score.strategy_correct)
+    print(f"    {'row-shape loss':<16} {score.loss}")
+    print()
 
 class AggregateMetrics(NamedTuple):
     total_columns:         int

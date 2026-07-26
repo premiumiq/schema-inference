@@ -64,8 +64,22 @@ class MappingProposal(BaseModel):
                                             # resolve; each dict has target_field + competing
                                             # source_columns for a dedicated reviewer phase
     excluded_metadata_columns: list[str]    # _CDC_* columns excluded from mapping
+    row_shape: dict | None = None           # MAP-5: RowShapeProposal.model_dump(), or None
     run_id: str | None = None               # links back to AgentMappingRun / metamodel (MAP-1); None for legacy rule+LLM path
 
+class RowShapeProposal(BaseModel):
+    """MAP-5: the RowShapeAgent's proposal for how to dedup a source table
+    into one canonical row per entity. Scored against the catalog's
+    `row_shape` ground-truth section, same infrastructure as column mappings."""
+    source_name: str
+    table_name: str
+    natural_key: list[str]                   # candidate key column(s)
+    recency_column: str | None = None        # version/recency signal, if any
+    dedup_strategy: Literal["row_number", "cdc_latest", "none"] = "row_number"
+    dedup_pattern: str | None = None         # the generated dedup SQL predicate
+    confidence: float = 0.0                  # 0.0–1.0, same shape as ColumnMapping.confidence
+    reasoning: str = ""                       # why these columns were chosen
+    run_id: str | None = None                # links to metamodel (MAP-1)
 
 # ─── Reviewer output ─────────────────────────────────────────────────────────
 
