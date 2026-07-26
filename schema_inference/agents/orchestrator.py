@@ -141,7 +141,7 @@ def run_mapping(
     # ── Step 1: Rule pass (existing logic, unchanged) ────────────────────────
     rule_results: dict[str, ColumnMapping] = {}
     for col in business_cols:
-        m = _rule_map_column(col, table.is_empty_string_null)
+        m = _rule_map_column(col, table.is_empty_string_null, source_name=source_name)
         m.source_table = table.name
         rule_results[col.name] = m
 

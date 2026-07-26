@@ -45,25 +45,33 @@ LLM_BATCH_SIZE = 20
 DEFAULT_LLM_THRESHOLD = 0.70
 
 # Rule-engine confidence weights (name_sim, type_compat, pattern_bonus).
-# MAP-4 Layer 0 (tools/tune_rule_weights.py) grid-searches these against
-# ground truth and writes the winner into agent_config.yml's rule_engine.weights
-# section. _rule_weights() picks up that override; the hardcoded tuple below
-# is only the fallback when no config override exists.
+# MAP-4 Layer 0 (tools/tune_rule_weights.py) grid-searches these per source
+# and writes the winner into agent_config.yml's rule_engine.weights_by_source
+# section (keyed by source name), falling back to rule_engine.weights for any
+# source without a tuned entry. _rule_weights() picks up both; the hardcoded
+# tuple below is only the fallback when no config override exists at all.
 _DEFAULT_RULE_WEIGHTS = (0.65, 0.25, 0.10)  # name_sim, type_compat, pattern_bonus
 _AGENT_CONFIG_PATH = Path(__file__).parent / "agent_config.yml"
 
 
-@lru_cache(maxsize=1)
-def _rule_weights() -> tuple[float, float, float]:
-    """(name_sim, type_compat, pattern_bonus) weights, from agent_config.yml's
-    rule_engine.weights section if present, else the original hardcoded
-    defaults. Cached per-process — a tuner script that writes a new weights
+@lru_cache(maxsize=None)
+def _rule_weights(source_name: str | None = None) -> tuple[float, float, float]:
+    """(name_sim, type_compat, pattern_bonus) weights for source_name.
+
+    Lookup order: agent_config.yml's rule_engine.weights_by_source[source_name]
+    -> rule_engine.weights (global fallback) -> hardcoded default. Cached
+    per-process per source_name — a tuner script that writes a new weights
     section takes effect on the next process invocation, not within one."""
     if _AGENT_CONFIG_PATH.exists():
         try:
             with open(_AGENT_CONFIG_PATH, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
-            w = (cfg.get("rule_engine") or {}).get("weights")
+            rule_cfg = cfg.get("rule_engine") or {}
+            w = None
+            if source_name:
+                w = (rule_cfg.get("weights_by_source") or {}).get(source_name)
+            if not w:
+                w = rule_cfg.get("weights")
             if w and all(k in w for k in ("name_sim", "type_compat", "pattern_bonus")):
                 return (float(w["name_sim"]), float(w["type_compat"]), float(w["pattern_bonus"]))
         except (yaml.YAMLError, OSError, ValueError, TypeError):
@@ -148,11 +156,12 @@ def _compute_confidence(
     type_compat: float,
     pat_bonus: float,
     weights: tuple[float, float, float] | None = None,
+    source_name: str | None = None,
 ) -> float:
-    """weights=None uses the configured/default weights (_rule_weights()).
-    Tuning code passes an explicit weights tuple to score a candidate
-    without touching agent_config.yml or the cached default."""
-    w1, w2, w3 = weights if weights is not None else _rule_weights()
+    """weights=None uses the configured/default weights for source_name
+    (_rule_weights()). Tuning code passes an explicit weights tuple to score
+    a candidate without touching agent_config.yml or the cached default."""
+    w1, w2, w3 = weights if weights is not None else _rule_weights(source_name)
     return min(1.0, w1 * name_sim + w2 * type_compat + w3 * pat_bonus)
 
 
@@ -237,13 +246,15 @@ def _rule_map_column(
     col: ColumnProfile,
     is_empty_string_null: bool,
     weights: tuple[float, float, float] | None = None,
+    source_name: str | None = None,
 ) -> ColumnMapping:
     """Find the best canonical field match for a single column.
 
-    weights=None uses the configured/default rule-engine weights. Passing an
-    explicit tuple (tools/tune_rule_weights.py) re-scores every candidate
-    canonical field under that tuple — necessary because changing the
-    weights can change which field wins, not just the winning score.
+    weights=None uses the configured/default rule-engine weights for
+    source_name. Passing an explicit tuple (tools/tune_rule_weights.py)
+    re-scores every candidate canonical field under that tuple — necessary
+    because changing the weights can change which field wins, not just the
+    winning score.
     """
     best_field: "CanonicalField | None" = None
     best_conf = 0.0
@@ -255,7 +266,7 @@ def _rule_map_column(
         nsim = _name_similarity(col.name, field)
         tcomp = _type_compatibility(col.inferred_type, field.target_type, col)
         pat = _pattern_bonus(col.name, field)
-        conf = _compute_confidence(nsim, tcomp, pat, weights=weights)
+        conf = _compute_confidence(nsim, tcomp, pat, weights=weights, source_name=source_name)
 
         if conf > best_conf:
             best_conf = conf
@@ -458,7 +469,7 @@ def map_table(
     # Rule-based pass
     rule_results: dict[str, ColumnMapping] = {}
     for col in business_cols:
-        m = _rule_map_column(col, table.is_empty_string_null)
+        m = _rule_map_column(col, table.is_empty_string_null, source_name=source_name)
         m.source_table = table.name
         rule_results[col.name] = m
 

@@ -96,11 +96,11 @@ def _build_rule_proposal(
 
     mappings = []
     for col in business_cols:
-        m = _rule_map_column(col, table.is_empty_string_null, weights=weights)
+        m = _rule_map_column(col, table.is_empty_string_null, weights=weights, source_name=source_name)
         m.source_table = table.name
         mappings.append(m)
 
-    final = _deduplicate(mappings)
+    final, contested = _deduplicate(mappings)
     unmapped = [m.source_column for m in final if m.target_field is None]
 
     return {
@@ -110,6 +110,7 @@ def _build_rule_proposal(
         "unmapped_columns": unmapped,
         "missing_standard_fields": [],
         "excluded_metadata_columns": excluded,
+        "contested_mappings": contested,
     }
 
 
@@ -139,22 +140,49 @@ def _score_proposal_dict(
 
 # ── Config write-back (regex, preserves comments) ────────────────────────────
 
-def _write_weights_to_config(weights: tuple[float, float, float], config_path: Path) -> None:
+def _write_weights_to_config(
+    weights: tuple[float, float, float], config_path: Path, source_name: str
+) -> None:
+    """Write weights to rule_engine.weights_by_source.<source_name>, leaving
+    every other source's entry and the global rule_engine.weights fallback
+    untouched. Regex-based (not a full YAML round-trip) so the file's
+    explanatory comments survive — a --apply on 'pasm' must not clobber
+    'pasl's tuned weights or vice versa."""
     alpha, beta, gamma = weights
     text = config_path.read_text(encoding="utf-8")
 
-    def _sub(field: str, value: float, s: str) -> str:
-        pattern = rf"^(\s*{field}:\s*)[\d.]+(.*)$"
-        replacement = rf"\g<1>{value:.4f}\g<2>"
-        new_s, n = re.subn(pattern, replacement, s, count=1, flags=re.MULTILINE)
-        if n == 0:
-            raise ValueError(f"Could not find '{field}:' line in {config_path}")
-        return new_s
+    block = (
+        f"    {source_name}:\n"
+        f"      name_sim: {alpha:.4f}\n"
+        f"      type_compat: {beta:.4f}\n"
+        f"      pattern_bonus: {gamma:.4f}\n"
+    )
 
-    text = _sub("name_sim", alpha, text)
-    text = _sub("type_compat", beta, text)
-    text = _sub("pattern_bonus", gamma, text)
-    config_path.write_text(text, encoding="utf-8")
+    # Existing entry for this source -> replace it in place.
+    source_block_re = re.compile(
+        rf"^    {re.escape(source_name)}:\n(?:      \S.*\n)+", re.MULTILINE
+    )
+    if source_block_re.search(text):
+        text = source_block_re.sub(lambda m: block, text, count=1)
+        config_path.write_text(text, encoding="utf-8")
+        return
+
+    # No entry yet for this source, but weights_by_source: section exists -> append.
+    wbs_re = re.compile(r"^  weights_by_source:\n", re.MULTILINE)
+    if wbs_re.search(text):
+        text = wbs_re.sub(lambda m: m.group(0) + block, text, count=1)
+        config_path.write_text(text, encoding="utf-8")
+        return
+
+    # weights_by_source: section doesn't exist at all -> create it right
+    # after the global rule_engine.weights block.
+    weights_block_re = re.compile(r"^(  weights:\n(?:    \S.*\n)+)", re.MULTILINE)
+    new_text, n = weights_block_re.subn(
+        lambda m: m.group(1) + "  weights_by_source:\n" + block, text, count=1
+    )
+    if n == 0:
+        raise ValueError(f"Could not find 'weights:' block to anchor weights_by_source in {config_path}")
+    config_path.write_text(new_text, encoding="utf-8")
 
 
 # ── Metamodel logging ─────────────────────────────────────────────────────────
@@ -217,7 +245,7 @@ def main() -> None:
     # Baseline = whatever's currently active (weights=None -> _rule_weights() ->
     # agent_config.yml's current rule_engine.weights, or the hardcoded fallback).
     from schema_inference.mapper import _rule_weights
-    baseline_weights = _rule_weights()
+    baseline_weights = _rule_weights(args.source_name)
     print(f"Baseline weights (currently active): "
           f"name_sim={baseline_weights[0]:.2f} type_compat={baseline_weights[1]:.2f} pattern_bonus={baseline_weights[2]:.2f}")
     baseline_proposal = _build_rule_proposal(table, args.source_name, weights=baseline_weights)
@@ -249,7 +277,7 @@ def main() -> None:
     applied = False
     if args.apply:
         if best_metrics.mean_loss < baseline_metrics.mean_loss:
-            _write_weights_to_config(best_weights, AGENT_CONFIG_PATH)
+            _write_weights_to_config(best_weights, AGENT_CONFIG_PATH, args.source_name)
             print(f"\nApplied — wrote weights to {AGENT_CONFIG_PATH}")
             applied = True
         else:
