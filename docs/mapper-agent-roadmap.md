@@ -89,9 +89,16 @@ See dedicated design doc — [`self-tuning-mapper-agent-plan.md`](self-tuning-ma
   Grid-searches the `(name_sim, type_compat, pattern_bonus)` weight simplex,
   writes winning weights to `agent_config.yml`. PAS-L result:
   weights 0.65/0.25/0.10 → 0.15/0.20/0.65, F1 87.5% → 100%.
-  **Gap:** `agent_config.yml` has one global `rule_engine.weights` section —
-  applying Layer 0 for PAS-M would clobber PAS-L's tuned weights. Per-source
-  weights section needed before both sources can be tuned independently.
+  **Per-source weights — done.** `agent_config.yml`'s `rule_engine.weights_by_source`
+  (keyed by source name, falling back to the global `rule_engine.weights` for any
+  unlisted source) means tuning one source's weights no longer clobbers another's.
+  `mapper._rule_weights(source_name)` / `_rule_map_column(..., source_name=)` /
+  `map_table(...)` thread it through; `tune_rule_weights.py --apply` writes to the
+  source-specific key only (verified: a `pasm --apply` run leaves `pasl`'s mapping
+  output byte-identical). First real PAS-M Layer 0 run: weights 0.65/0.25/0.10 →
+  0.50/0.35/0.15, mean_loss 0.2771 → 0.2756 — marginal; F1/hard-F1 unchanged
+  (85.7%/66.7%), confirming the gap below is a rule-engine ceiling, not a
+  weight-tuning problem.
 
 - **Layer 1** (few-shot example bank) — **done.** `tools/curate_few_shot_bank.py`,
   `schema_inference/metamodel/few_shot.py`. Scans `mapping_history` for
@@ -106,10 +113,18 @@ See dedicated design doc — [`self-tuning-mapper-agent-plan.md`](self-tuning-ma
   pipeline on holdout split, accepts if loss improves with no regression.
   Diff guardrail (0.50–0.995 diff ratio), train/holdout split, human approval
   gate before prompt reaches production, early-stop after 3 consecutive failed
-  rounds. Live diagnose/propose quality unverified without `ANTHROPIC_API_KEY`
-  in CI; mechanics verified with injected fake LLM clients.
+  rounds.
   **Scope**: tuning runs are scoped to the split/ambiguous column subset only
   (not full 46-col pipeline) via `_scoped_table()`.
+  **First live PAS-M run** (`ANTHROPIC_API_KEY` set, mapping agent, 5 rounds
+  requested / 3 run before early-stop): baseline holdout mean_loss 0.1738,
+  F1 0.8889. All 3 candidate prompts rejected — 2 of 3 independently regressed
+  specifically on `underwriting_tier` (mean_loss 0.3316), the 3rd tied the
+  baseline exactly. No candidate accepted (correct behavior — the tuning loop
+  never self-promotes; nothing cleared the improvement bar). Confirms prompt-
+  level tuning alone doesn't close PAS-M's real gap (`line_of_business`
+  dual-target, `insured_ein` trap, `underwriting_tier`/`commercial_rating_group`
+  confusion) — that needs Layer 1 volume or Layer 3, not Layer 2.
 
 - **Layer 3** (learned critic trigger) — **deferred.** Gate: two sources'
   ground truth now exists (PAS-L and PAS-M, `ground_truth/`). Confirmed real
@@ -119,6 +134,91 @@ See dedicated design doc — [`self-tuning-mapper-agent-plan.md`](self-tuning-ma
   trap. Layer 3 still needs accumulated `mapping_history` volume across both
   sources (not just the catalogs) before fitting a classifier is worthwhile.
   Revisit once 3+ client sources have gone through Layers 0–2.
+
+---
+
+### MAP-4.1: Multi-schema canonical targets — **DONE** (`pasm_coverage` onboarded as template)
+
+The tool could previously only ever map to one hardcoded canonical schema
+(`canonical/policy.py`'s `CANONICAL_FIELDS`, imported at module scope in 7
+files). Onboarding a second real table required making the target schema
+selectable per table instead of a single global.
+
+- **`canonical/registry.py`** — `schema_for_table(table_name) -> schema_key`,
+  with `TABLE_SCHEMA: dict[str, str]` mapping known table names to a schema
+  key and every unlisted `table_name` falling back to `'policy'`. This
+  fallback is what makes the refactor provably a no-op for every
+  pre-existing table (verified: rule-only mapping output for both
+  `pasl_policy` and `pasm_policy` is byte-identical to the pre-refactor
+  commit with weights held constant).
+- `mapper.py`, `orchestrator.py`: `canonical_fields`/`canonical_by_name`/
+  `canonical_names` now flow as explicit params from `map_table()`/
+  `run_mapping()` (which resolve `schema_key` once via `table.name`) down
+  through `_rule_map_column`, `_run_llm_batch`, `_deduplicate`,
+  missing-required-fields detection.
+- `critic_agent.py`, `sql_agent.py`: `resolve_contests()`/`run_sql_agent()`
+  take an optional `canonical_by_name`, defaulting to the `policy` schema.
+- `tools.py`: the six agent tool functions (`lookup_canonical`,
+  `generate_sql`, etc.) are invoked by the LLM via a fixed JSON tool schema
+  with no way to pass "which target schema" as an argument. Extended the
+  existing `contextvars`-based run-registry pattern (`register_profiles`)
+  with `_SOURCE_NAME_VAR`/`_CANONICAL_SCHEMA_VAR` so tool calls resolve the
+  right schema and the right per-source catalog for whichever run is active.
+
+**Bug found and fixed along the way:** `tools.py`'s `check_value_catalog`/
+`get_hard_columns` and `orchestrator.py`'s missing-field suppression were
+hardcoded to `pasl_value_catalog.json`/`pasl_schema_catalog.yml` regardless
+of which source was actually running — every PAS-M agent run had silently
+been getting PAS-L's catalog data through those tools. Now resolved
+per-source from `_SOURCE_NAME_VAR` / the `source_name` param.
+
+**Template proof:** `pasm_coverage` onboarded end to end — fixtures pulled
+from `insurance_data_ecosystem`'s generated `bronze_data/pasm_coverage.dat`
+(12-row CI fixture + 49-row sample, matching the `pasl`/`pasm_policy`
+tiering), `canonical/pasm_coverage.py` mirroring
+`dbt_project/insurance_multi_pas/models/staging/pas_m/stg_pasm_coverage.sql`'s
+column output (no silver-layer model exists yet upstream for this table, so
+the staging model's `CAST`'d output is the authoritative target shape),
+ground truth catalog at
+`examples/insurance/ground_truth/pasm_coverage_schema_catalog.yml`. Rule-only
+mapping scores F1 100% (11/11 columns correct) — expected, this table's
+source/target column names are already near-identical, unlike
+`pasl_policy`'s mainframe abbreviations.
+
+**Remaining PAS-M tables — postponed until after MAP-7 design + initial
+implementation.** Roadmap's original table list (`pasm_coverage`/
+`pasm_premium_register`/`pasm_transaction_log`/`pasm_risk_object`) turned out
+stale: bronze tables `pasm_premium_register` and `pasm_transaction_log` are
+staged under *renamed* models, and `pasm_risk_object` has no staging model
+at all. Corrected picture, and the steps to onboard each (same recipe
+`pasm_coverage` used):
+
+| Bronze table | Staging target | Status |
+|---|---|---|
+| `pasm_coverage` | `stg_pasm_coverage.sql` | done (template) |
+| `pasm_premium_register` | `stg_pasm_written_premium.sql` | ready — real target exists, not yet onboarded |
+| `pasm_transaction_log` | `stg_pasm_policy_event.sql` | ready — real target exists, not yet onboarded |
+| `pasm_risk_object` | *(none)* | no upstream target — nothing to catalog against; skip until a staging model exists |
+
+To onboard `pasm_premium_register` or `pasm_transaction_log`:
+1. Pull fixtures: `head -13`/`head -50` of `insurance_data_ecosystem`'s
+   `bronze_data/{table}.dat` into `examples/insurance/test_data/{table}.dat`
+   (12-row CI fixture) and `{table}_sample.dat` (49-row sample).
+2. Add `canonical/{table}.py` mirroring the staging model's `SELECT` output
+   (column name, type, `required` = whichever columns have `not_null` dbt
+   tests in that model's `schema.yml`), and register it in
+   `canonical/registry.py`'s `_SCHEMAS`/`TABLE_SCHEMA`.
+3. Write `examples/insurance/ground_truth/{table}_schema_catalog.yml`
+   (`canonical_target`/`confidence_floor`/`transformation`/`is_hard`/`notes`
+   per source column, same shape as `pasm_coverage_schema_catalog.yml`).
+4. `profile` → `map --no-llm` → `scripts/score_mappings.py --source-name
+   {table}` to verify against the catalog.
+
+Decision: not done now — the multi-schema plumbing is proven with one
+table, which is what actually unblocked MAP-7 (its UI needs schema-aware
+mapping to exist, not exhaustive PAS-M coverage). Revisit after the MAP-7
+design spike and initial implementation land, when there's a concrete UI
+need for more demo tables.
 
 ---
 
@@ -219,12 +319,18 @@ Protocol or a lightweight JSON-RPC bridge. The extension lives in the same
 `premiumiq/schema-inference` repo (post repo-split) as a `vscode/` workspace
 subfolder.
 
-**Depends on:** repo split (MAP-7 extension can't live in the insurance
-warehouse repo). MAP-3 and MAP-5 complete (contested mappings and row-shape
-are core UI surfaces).
+**Depends on:** repo split ✅. MAP-3 ✅ and MAP-5 ✅ complete (contested
+mappings and row-shape are core UI surfaces). MAP-4.1 ✅ (multi-schema
+canonical targets) — the mapping health sidebar / row-shape display need to
+be schema-aware (per-table, via `canonical/registry.py`) rather than
+assuming one flat target; design against `pasl_policy` + `pasm_policy` +
+`pasm_coverage` as the reference tables, not just one.
 
-**Not yet started.** Design spike is the logical first step once the repo
-split is complete.
+**All dependencies clear. Design spike is the next step.** Not yet started.
+Remaining PAS-M table coverage (`pasm_premium_register`, `pasm_transaction_log`
+— see MAP-4.1) is deliberately postponed until after this spike and an
+initial implementation land, so the UI design is informed by a real (if
+partial) multi-table dataset without blocking on exhaustive catalog work.
 
 ---
 
@@ -232,10 +338,10 @@ split is complete.
 
 | Gap | Impact | Owner |
 |-----|--------|-------|
-| Per-source rule weights in `agent_config.yml` | Layer 0 tuning for PAS-M clobbers PAS-L's weights | Before next Layer 0 `--apply` run on pasm |
-| PAS-M other tables cataloged | Only `pasm_policy` has ground truth; `pasm_coverage`/`pasm_premium_register`/`pasm_transaction_log`/`pasm_risk_object` uncatalogued | Blocking PAS-M end-to-end scoring |
+| ~~Per-source rule weights in `agent_config.yml`~~ | **Done** — `rule_engine.weights_by_source` (MAP-4.1) | — |
+| PAS-M remaining tables cataloged | `pasm_policy` + `pasm_coverage` have ground truth; `pasm_premium_register`/`pasm_transaction_log` have real staging targets but aren't onboarded yet; `pasm_risk_object` has no target at all | **Postponed until after MAP-7 design + initial implementation** (see MAP-4.1) |
 | Layer 1 volume | Few-shot bank empty — needs real accumulated `mapping_history` with verdicts | Accumulates naturally once pipeline runs in production |
-| Layer 2 live quality | tune_prompts.py mechanics verified with fake LLM client; live quality (actual prompt edit usefulness) not verified | Needs `ANTHROPIC_API_KEY` + real PAS-M run |
+| ~~Layer 2 live quality~~ | **Done** — first live PAS-M run completed (see MAP-4 Layer 2 above): no improving candidate, correctly rejected | — |
 | MAP-5 LLM layer | Deterministic heuristics handle PAS-L; ambiguous tables (PAS-M) may need LLM fallback | After PAS-M tested |
 | WP-10 schema snapshots | `schema_snapshots.enabled` placeholder — no generator code; only test fixture built | Separate WP |
 
@@ -243,11 +349,16 @@ split is complete.
 
 ## Suggested build order going forward
 
-1. **Repo split** — extract `schema_inference` into `premiumiq/schema-inference`
-   (see `docs/repo-split-schema-inference.md`). Unblocks MAP-7.
-2. **Per-source rule weights** — design + implement before any more Layer 0
-   `--apply` runs on PAS-M.
-3. **MAP-7 design spike** — VS Code extension architecture once repo split lands.
-4. **MAP-6 design spike** — table-level mapping; low priority until MAP-5 is
+1. ~~**Repo split**~~ — done.
+2. ~~**Per-source rule weights**~~ — done (MAP-4.1).
+3. ~~**Live Layer 2 run on PAS-M**~~ — done; no improving candidate found, correctly
+   rejected (see MAP-4 Layer 2 above).
+4. ~~**Multi-schema canonical targets + `pasm_coverage` template**~~ — done (MAP-4.1).
+5. **MAP-7 design spike** — VS Code extension architecture. All dependencies clear
+   — this is the next task.
+6. **Remaining PAS-M table coverage** (`pasm_premium_register`,
+   `pasm_transaction_log`) — postponed until after MAP-7's design spike and
+   initial implementation land (see MAP-4.1 for the exact onboarding steps).
+7. **MAP-6 design spike** — table-level mapping; low priority until MAP-5 is
    battle-tested across multiple sources.
-5. **Layer 3** — revisit once 3+ client sources have real `mapping_history` volume.
+8. **Layer 3** — revisit once 3+ client sources have real `mapping_history` volume.
