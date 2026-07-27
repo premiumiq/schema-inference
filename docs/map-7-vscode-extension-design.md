@@ -361,7 +361,42 @@ Concretely:
    type-correct in isolation. No VS Code Extension Host smoke test yet
    (would need an interactive VS Code window); that's the natural next
    verification step before this goes further, not before step 4.
-4. **Review panel** (#2) — webview wired to the refactored reviewer calls.
+4. **Review panel** (#2) — **done.** `vscode/src/reviewPanel.ts`: a
+   `WebviewPanel` (`ReviewPanel.createOrShow`, singleton — reveals the
+   existing panel rather than opening a second one) driven entirely by the
+   `review.*` methods built in step 2. Columns render grouped into the same
+   three tiers `reviewer.py`'s `_fmt_confidence`/`review_proposal()` already
+   use (>=85% auto, 50-84% flagged, <50% low) — not a second threshold
+   scheme. Each row has Accept / Skip / Modify (inline target field, SQL
+   expression, notes); missing-required-field and contested-mapping
+   sections resolve via the same `review.resolve_missing_field` /
+   `review.resolve_contest` calls; a Finalize button calls
+   `review.finalize` and surfaces the written `MappingDefinition` path or,
+   if columns are still pending or a contest unresolved, the bridge's
+   rejection message verbatim.
+
+   `extension.ts`'s `profileAndMapCurrentFile` now also passes `map.run` an
+   `output` path (`registry/{source}/proposal_{table}.json`, alongside the
+   existing `profile_{table}.json` convention) so `review.start` has a
+   stable path to reload — needed once review state has to survive past a
+   single in-memory command run. New command: `Schema Inference: Open
+   Review Panel`.
+
+   Design choice worth flagging: the panel keeps its own `decisions` map to
+   render already-decided rows without a status round-trip after every
+   click, including replaying `apply_contest_resolution`'s winner/loser
+   logic client-side for display. The bridge's `ReviewSession` is still the
+   only thing `review.finalize` actually reads from — if the panel's local
+   mirror ever drifted from the server, only the *display* would be wrong,
+   never what gets written to disk.
+
+   Verified: `tsc --strict` compiles clean with the new file wired in
+   (`out/reviewPanel.js` present). Not yet verified inside a real VS Code
+   Extension Development Host (webview message-passing and DOM/CSP
+   behavior can't be exercised without one) — same caveat as step 3's
+   hover provider, now compounded across two unverified UI surfaces. That
+   combined gap is the natural checkpoint before step 5, not something to
+   keep deferring indefinitely.
 5. **Contested + row-shape panels** (#5, #6) — no new bridge calls needed,
    pure UI work once #2's webview scaffolding exists.
 6. **Health sidebar** (#4) — separate webview, `metamodel.query_loss_runs`.

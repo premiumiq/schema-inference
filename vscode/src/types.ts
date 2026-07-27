@@ -49,3 +49,26 @@ export interface MapRunResult {
   run_id: string | null;
   proposal_path?: string;
 }
+
+export interface ReviewStatus {
+  total_columns: number;
+  decided_columns: number;
+  pending_columns: string[];
+  missing_standard_fields: string[];
+  missing_fields_resolved: string[];
+  contested_targets: string[];
+  contests_resolved: string[];
+}
+
+export interface ReviewStartResult {
+  session_id: string;
+  source_name: string;
+  table_name: string;
+  mappings: ColumnMapping[];
+  unmapped_columns: string[];
+  missing_standard_fields: string[];
+  contested_mappings: MappingProposal['contested_mappings'];
+  excluded_metadata_columns: string[];
+  row_shape: Record<string, unknown> | null;
+  status: ReviewStatus;
+}

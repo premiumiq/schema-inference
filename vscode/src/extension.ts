@@ -1,18 +1,20 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { BridgeClient, BridgeError } from './bridgeClient';
+import { ReviewPanel } from './reviewPanel';
 import { MapRunResult, MappingProposal, ProfileRunResult } from './types';
 
 let bridge: BridgeClient | undefined;
 
 /**
  * One MappingProposal per profiled file, keyed by absolute fsPath. In-memory
- * only -- MAP-7 step 3 scope is "profile a .dat file, see hover cards," not
- * persistence across window reloads. The proposal JSON the bridge already
- * wrote to disk is the durable copy; this cache just avoids re-reading it
- * on every hover.
+ * only -- persistence across window reloads is the proposal JSON already
+ * written to disk (proposalPath), which review.start reads directly; this
+ * cache just avoids re-reading it on every hover / avoids re-running
+ * profile+map to open the review panel for a file already done this session.
  */
-const proposalsByFile = new Map<string, { proposal: MappingProposal; delimiter: string }>();
+const proposalsByFile = new Map<string, { proposal: MappingProposal; delimiter: string; proposalPath: string }>();
 
 function resolvePythonPath(): string {
   const configured = vscode.workspace.getConfiguration('schemaInference').get<string>('pythonPath');
@@ -84,6 +86,7 @@ export function activate(context: vscode.ExtensionContext): void {
       bridge = startBridge();
       vscode.window.showInformationMessage('Schema Inference: bridge restarted.');
     }),
+    vscode.commands.registerCommand('schemaInference.openReviewPanel', openReviewPanelForCurrentFile),
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
   );
 }
@@ -128,6 +131,15 @@ async function profileAndMapCurrentFile(): Promise<void> {
           source_name: sourceName,
         });
 
+        // Written next to the profile under the same registry/{source}/
+        // convention (profile_{table}.json already exists there) so
+        // review.start has a stable path to reload from later, including
+        // across window reloads.
+        const proposalPath = path.join(
+          path.dirname(profileResult.profile_path),
+          `proposal_${profileResult.table_name}.json`,
+        );
+
         // Rule-only (no_llm) for this shell -- the agent pipeline is a
         // later slice once map.progress notifications exist to show
         // per-column status during a long-running agent call (see design
@@ -136,17 +148,19 @@ async function profileAndMapCurrentFile(): Promise<void> {
           profile_path: profileResult.profile_path,
           table_name: profileResult.table_name,
           no_llm: true,
+          output: proposalPath,
         });
 
         proposalsByFile.set(filePath, {
           proposal: mapResult.proposal,
           delimiter: profileResult.delimiter,
+          proposalPath,
         });
 
         const mapped = mapResult.proposal.mappings.filter((m) => m.target_field).length;
         vscode.window.showInformationMessage(
           `Schema Inference: ${mapped}/${mapResult.proposal.mappings.length} columns mapped. ` +
-            'Hover the header row to inspect.',
+            'Hover the header row, or run "Schema Inference: Open Review Panel" to review.',
         );
       } catch (err) {
         const message = err instanceof BridgeError ? err.message : String(err);
@@ -154,6 +168,34 @@ async function profileAndMapCurrentFile(): Promise<void> {
       }
     },
   );
+}
+
+async function openReviewPanelForCurrentFile(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  const filePath = editor?.document.uri.fsPath;
+  const cached = filePath ? proposalsByFile.get(filePath) : undefined;
+
+  if (!cached) {
+    vscode.window.showWarningMessage(
+      'Schema Inference: run "Profile & Map Current File" on this file first.',
+    );
+    return;
+  }
+
+  let client: BridgeClient;
+  try {
+    client = getBridge();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Schema Inference: ${(err as Error).message}`);
+    return;
+  }
+
+  try {
+    await ReviewPanel.createOrShow(client, cached.proposalPath);
+  } catch (err) {
+    const message = err instanceof BridgeError ? err.message : String(err);
+    vscode.window.showErrorMessage(`Schema Inference: ${message}`);
+  }
 }
 
 function provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Hover> {
