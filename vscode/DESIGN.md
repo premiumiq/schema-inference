@@ -18,7 +18,10 @@ Build order progress (see design doc §6 for detail):
    per column, missing-field and contested-mapping resolution, finalize.
    Manually verified end to end in the same Extension Development Host run
    — full review completed and `MappingDefinition` JSON written to disk.
-5. Contested + row-shape panel polish, mapping health sidebar — next.
+5. Contested-mapping polish (per-column confidence, provisional-winner
+   default) + row-shape section (MAP-5 natural key / dedup strategy) in
+   the review panel — done.
+6. Mapping health sidebar (`metamodel.query_loss_runs`) — next.
 
 ## Planned scope
 

@@ -29,9 +29,22 @@ export interface MappingProposal {
     target_field: string;
     competing_columns: string[];
     confidences?: Record<string, number>;
+    provisional_winner?: string;
   }>;
   excluded_metadata_columns: string[];
-  row_shape: Record<string, unknown> | null;
+  row_shape: RowShapeProposal | null;
+  run_id: string | null;
+}
+
+export interface RowShapeProposal {
+  source_name: string;
+  table_name: string;
+  natural_key: string[];
+  recency_column: string | null;
+  dedup_strategy: 'row_number' | 'cdc_latest' | 'none';
+  dedup_pattern: string | null;
+  confidence: number;
+  reasoning: string;
   run_id: string | null;
 }
 
@@ -69,6 +82,6 @@ export interface ReviewStartResult {
   missing_standard_fields: string[];
   contested_mappings: MappingProposal['contested_mappings'];
   excluded_metadata_columns: string[];
-  row_shape: Record<string, unknown> | null;
+  row_shape: RowShapeProposal | null;
   status: ReviewStatus;
 }

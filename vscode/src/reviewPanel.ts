@@ -237,16 +237,31 @@ export class ReviewPanel {
 
     const contestedHtml = this.start.contested_mappings.length
       ? `<h2>Contested mappings</h2>
+         <p class="hint">Near-tied confidence, no secondary target on the field -- the rule
+         pass couldn't resolve these on its own (MAP-3). Provisional winner (highest
+         confidence) is pre-selected; change it if it's wrong.</p>
          <table>
            ${this.start.contested_mappings
              .map((c) => {
+               const confidences = c.confidences ?? {};
                const options = c.competing_columns
-                 .map((col) => `<option value="${escapeHtml(col)}">${escapeHtml(col)}</option>`)
+                 .map((col) => {
+                   const conf = confidences[col];
+                   const confStr = conf !== undefined ? ` (${(conf * 100).toFixed(0)}%)` : '';
+                   const selected = col === c.provisional_winner ? ' selected' : '';
+                   return `<option value="${escapeHtml(col)}"${selected}>${escapeHtml(col)}${confStr}</option>`;
+                 })
                  .join('');
+               const competingList = c.competing_columns
+                 .map((col) => {
+                   const conf = confidences[col];
+                   return escapeHtml(col) + (conf !== undefined ? ` (${(conf * 100).toFixed(0)}%)` : '');
+                 })
+                 .join(', ');
                return `
              <tr data-contest-target="${escapeHtml(c.target_field)}">
                <td>${escapeHtml(c.target_field)}</td>
-               <td>competing: ${c.competing_columns.map(escapeHtml).join(', ')}</td>
+               <td>competing: ${competingList}</td>
                <td>
                  <select class="contest-winner">
                    <option value="">(none -&gt; extended_attributes)</option>
@@ -258,6 +273,20 @@ export class ReviewPanel {
              </tr>`;
              })
              .join('')}
+         </table>`
+      : '';
+
+    const rowShape = this.start.row_shape;
+    const rowShapeTier = rowShape ? (rowShape.confidence >= AUTO_TIER ? 'auto' : rowShape.confidence >= FLAGGED_TIER ? 'flagged' : 'low') : 'low';
+    const rowShapeHtml = rowShape
+      ? `<h2>Row shape (MAP-5)</h2>
+         <table>
+           <tr><td>Natural key</td><td><code>${escapeHtml(rowShape.natural_key.join(', ') || '(none)')}</code></td></tr>
+           <tr><td>Recency column</td><td>${escapeHtml(rowShape.recency_column ?? '(none)')}</td></tr>
+           <tr><td>Dedup strategy</td><td>${escapeHtml(rowShape.dedup_strategy)}</td></tr>
+           <tr><td>Confidence</td><td><span class="badge ${rowShapeTier}">${(rowShape.confidence * 100).toFixed(0)}%</span></td></tr>
+           <tr><td>Reasoning</td><td>${escapeHtml(rowShape.reasoning || '(none)')}</td></tr>
+           ${rowShape.dedup_pattern ? `<tr><td>Dedup SQL</td><td><code>${escapeHtml(rowShape.dedup_pattern)}</code></td></tr>` : ''}
          </table>`
       : '';
 
@@ -276,6 +305,8 @@ export class ReviewPanel {
   .badge.low { background: #f8514926; color: #f85149; }
   .state { font-style: italic; opacity: 0.8; }
   .state.done { color: #2ea043; }
+  .hint { opacity: 0.8; font-size: 0.9em; }
+  code { background: var(--vscode-textCodeBlock-background); padding: 1px 4px; border-radius: 3px; }
   button { cursor: pointer; }
   input, select { font-family: inherit; }
   #banner { display: none; padding: 6px 10px; margin-bottom: 10px; border-radius: 3px; }
@@ -290,6 +321,7 @@ export class ReviewPanel {
     <tr><th>Source column</th><th>Target</th><th>Confidence</th><th>Method</th><th>Notes</th><th>Actions</th></tr>
     ${rowsHtml}
   </table>
+  ${rowShapeHtml}
   ${missingFieldsHtml}
   ${contestedHtml}
   <div id="footer">

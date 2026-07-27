@@ -405,8 +405,24 @@ Concretely:
    externally, confirm the "Restart Bridge" / "Select Python Interpreter"
    notification appears) and the Debug Console for stray exceptions during
    the above run. Worth a quick pass before step 5, not a blocker.
-5. **Contested + row-shape panels** (#5, #6) — no new bridge calls needed,
-   pure UI work once #2's webview scaffolding exists.
+5. **Contested + row-shape panels** (#5, #6) — **done.** No new bridge
+   calls needed, as anticipated — pure UI work on top of #4's webview.
+   Contested-mappings section (already present as a basic table since step
+   4) now shows each competing column's confidence inline and in the
+   winner dropdown, and pre-selects `provisional_winner` (always
+   `competing_columns[0]`, since `mapper._deduplicate` sorts competitors
+   by confidence descending before recording a contest) rather than
+   defaulting to blank. New row-shape section renders the MAP-5
+   `RowShapeProposal` returned by `review.start` (already wired through the
+   bridge, just not displayed before): natural key, recency column, dedup
+   strategy, confidence badge (same tier coloring as columns), reasoning,
+   and the dedup SQL predicate if present. `vscode/src/types.ts` gained a
+   proper `RowShapeProposal` interface (was a loose `Record<string,
+   unknown>` before) and `provisional_winner` on the contested-mapping
+   type. `tsc --strict` clean; Python suite unaffected (no `.py` changes
+   this step). Not re-verified in a live Extension Host after this change
+   — worth a quick look next session before relying on it, same as any
+   UI-only diff.
 6. **Health sidebar** (#4) — separate webview, `metamodel.query_loss_runs`.
 7. **dbt scaffolding** (#3) — last, since it's the only feature that
    writes new files into the (separate) warehouse repo's territory and
