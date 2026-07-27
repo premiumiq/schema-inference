@@ -27,8 +27,30 @@
       {
         "command": "schemaInference.openReviewPanel",
         "title": "Schema Inference: Open Review Panel"
+      },
+      {
+        "command": "schemaInference.refreshHealthSidebar",
+        "title": "Schema Inference: Refresh Mapping Health",
+        "icon": "$(refresh)"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "schemaInferenceHealth",
+          "name": "Schema Inference: Mapping Health"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "schemaInference.refreshHealthSidebar",
+          "when": "view == schemaInferenceHealth",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "Schema Inference",
       "properties": {

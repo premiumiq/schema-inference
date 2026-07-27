@@ -2,10 +2,18 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { BridgeClient, BridgeError } from './bridgeClient';
+import { HealthTreeDataProvider } from './healthSidebar';
 import { ReviewPanel } from './reviewPanel';
 import { MapRunResult, MappingProposal, ProfileRunResult } from './types';
 
 let bridge: BridgeClient | undefined;
+let healthProvider: HealthTreeDataProvider | undefined;
+
+/** Last source_name used by profile.run this session -- the health sidebar
+ * has no other way to know which source to query, since sourceName is
+ * either read from settings or typed into a one-off input box (never
+ * persisted anywhere the sidebar could read it back from). */
+let lastSourceName: string | undefined;
 
 /**
  * One MappingProposal per profiled file, keyed by absolute fsPath. In-memory
@@ -79,6 +87,11 @@ function getBridge(): BridgeClient {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  healthProvider = new HealthTreeDataProvider(
+    () => bridge,
+    () => lastSourceName,
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('schemaInference.profileAndMap', profileAndMapCurrentFile),
     vscode.commands.registerCommand('schemaInference.restartBridge', () => {
@@ -87,7 +100,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage('Schema Inference: bridge restarted.');
     }),
     vscode.commands.registerCommand('schemaInference.openReviewPanel', openReviewPanelForCurrentFile),
+    vscode.commands.registerCommand('schemaInference.refreshHealthSidebar', () => healthProvider?.refresh()),
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
+    vscode.window.createTreeView('schemaInferenceHealth', { treeDataProvider: healthProvider }),
   );
 }
 
@@ -113,6 +128,8 @@ async function profileAndMapCurrentFile(): Promise<void> {
     });
     if (!sourceName) return;
   }
+  lastSourceName = sourceName;
+  healthProvider?.refresh();
 
   let client: BridgeClient;
   try {

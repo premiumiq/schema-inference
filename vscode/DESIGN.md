@@ -21,7 +21,13 @@ Build order progress (see design doc §6 for detail):
 5. Contested-mapping polish (per-column confidence, provisional-winner
    default) + row-shape section (MAP-5 natural key / dedup strategy) in
    the review panel — done.
-6. Mapping health sidebar (`metamodel.query_loss_runs`) — next.
+6. Mapping health sidebar (`src/healthSidebar.ts`) — done: native
+   `TreeDataProvider` under the Explorer view container, backed by
+   `metamodel.query_loss_runs`. Refresh via the view-title button or
+   "Schema Inference: Refresh Mapping Health".
+7. dbt staging model scaffolding — next (last per the design doc's build
+   order, since it's the only feature writing into the separate warehouse
+   repo's territory).
 
 ## Planned scope
 

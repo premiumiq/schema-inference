@@ -423,7 +423,37 @@ Concretely:
    this step). Not re-verified in a live Extension Host after this change
    — worth a quick look next session before relying on it, same as any
    UI-only diff.
-6. **Health sidebar** (#4) — separate webview, `metamodel.query_loss_runs`.
+6. **Health sidebar** (#4) — **done.** Per §7 open question 1's accepted
+   recommendation, a native `TreeDataProvider`
+   (`vscode/src/healthSidebar.ts`), not a webview — tiles/numbers with no
+   interaction beyond refresh didn't warrant custom layout control. Root
+   nodes are `loss_runs` rows (table name + timestamp, `run_id` as the
+   description, config snapshot as a JSON tooltip); expanding one lists
+   its `metrics` dict as leaf nodes. Deliberately *not* hardcoded to
+   F1/hard-F1/mean-loss: a real check against the local `metamodel.db`
+   found `tools/tune_rule_weights.py`'s Layer 0 runs record only
+   `mean_loss_before`/`mean_loss_after`, while `scripts/
+   score_mappings.py`'s full `AggregateMetrics` dict has 17 keys including
+   `f1`/`hard_f1` — the shape isn't fixed across producers, so the sidebar
+   renders whatever keys a given row actually has rather than assuming
+   one schema. Registered under the built-in Explorer view container
+   (`contributes.views.explorer`) rather than a new Activity Bar
+   container, to avoid needing a bundled SVG icon asset for a design-spike-
+   grade sidebar.
+
+   Source name comes from a module-level `lastSourceName` in
+   `extension.ts`, set whenever `profileAndMapCurrentFile` resolves one
+   (from settings or the input box) — the sidebar has no other way to
+   know which source to query, since a typed-in source name was never
+   persisted anywhere before this.
+
+   Verified: `tsc --strict` clean, `package.json`'s JSON parses, and a
+   Node harness driving the compiled `BridgeClient` confirmed
+   `metamodel.query_loss_runs` against the real (gitignored, local)
+   `metamodel.db` returns exactly the shape the provider expects for
+   `pasl` (1 run, Layer 0 metrics), `pasm` (2 runs), and a nonexistent
+   source (`metamodel_available: true`, empty `loss_runs`, no error). Not
+   yet re-verified in a live Extension Host after this change.
 7. **dbt scaffolding** (#3) — last, since it's the only feature that
    writes new files into the (separate) warehouse repo's territory and
    needs the most care around overwrite confirmation.
