@@ -133,6 +133,61 @@ def test_tracker_check_first_then_no_change(tmp_path, monkeypatch):
     assert second["result"]["version"]["version"] == 1
 
 
+def test_sql_generate_staging_model_never_overwrites_without_force(tmp_path):
+    profile_path = tmp_path / "profile.json"
+    call("profile.run", file_path=str(FIXTURE), source_name="pasl", output=str(profile_path))
+    proposal_path = tmp_path / "proposal.json"
+    call(
+        "map.run",
+        profile_path=str(profile_path),
+        table_name="pasl_policy",
+        no_llm=True,
+        output=str(proposal_path),
+    )
+    started = call("review.start", proposal_path=str(proposal_path))
+    session_id = started["result"]["session_id"]
+    for col in started["result"]["status"]["pending_columns"]:
+        call("review.accept_column", session_id=session_id, source_column=col)
+    for field in started["result"]["missing_standard_fields"]:
+        call("review.resolve_missing_field", session_id=session_id, field_name=field, resolution="NULL")
+    for contest in started["result"]["contested_mappings"]:
+        call(
+            "review.resolve_contest",
+            session_id=session_id, target_field=contest["target_field"],
+            winner=contest["competing_columns"][0],
+        )
+    definition_path = tmp_path / "definition.json"
+    call("review.finalize", session_id=session_id, output_path=str(definition_path))
+
+    output_path = tmp_path / "stg_pasl_policy.sql"
+    first = call(
+        "sql.generate_staging_model",
+        definition_path=str(definition_path), output_path=str(output_path),
+    )
+    assert first["result"]["written"] is True
+    assert output_path.exists()
+    written_contents = output_path.read_text(encoding="utf-8")
+    assert "with source as" in written_contents
+
+    # Second call without force must not clobber the file -- returns a
+    # preview instead, mirroring the "never overwrite silently" rule.
+    output_path.write_text("-- hand-edited by a human, do not clobber --", encoding="utf-8")
+    second = call(
+        "sql.generate_staging_model",
+        definition_path=str(definition_path), output_path=str(output_path),
+    )
+    assert second["result"]["written"] is False
+    assert second["result"]["exists"] is True
+    assert output_path.read_text(encoding="utf-8") == "-- hand-edited by a human, do not clobber --"
+
+    third = call(
+        "sql.generate_staging_model",
+        definition_path=str(definition_path), output_path=str(output_path), force=True,
+    )
+    assert third["result"]["written"] is True
+    assert "with source as" in output_path.read_text(encoding="utf-8")
+
+
 def test_serve_reads_newline_delimited_requests_and_writes_responses():
     import io
 

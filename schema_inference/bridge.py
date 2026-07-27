@@ -440,6 +440,31 @@ def _m_tracker_check(params: dict) -> dict:
         return {"version": None, "report": exc.report.model_dump(), "breaking": True}
 
 
+def _m_sql_generate_staging_model(params: dict) -> dict:
+    """MAP-7 step 7: dbt staging model scaffolding. Never overwrites an
+    existing file silently -- if output_path exists and force isn't set,
+    returns a preview instead of writing, so the extension can show a
+    confirm-before-overwrite prompt (same destructive-action caution as
+    the CLI's --force-accept-breaking flag on `track`)."""
+    from .models import MappingDefinition
+    from .sql_scaffold import generate_staging_model_sql
+
+    definition_path = Path(params["definition_path"])
+    if not definition_path.exists():
+        raise RpcError(APP_ERROR, f"mapping definition file not found: {definition_path}")
+
+    definition = MappingDefinition.model_validate_json(definition_path.read_text(encoding="utf-8"))
+    sql = generate_staging_model_sql(definition)
+
+    output_path = Path(params["output_path"])
+    if output_path.exists() and not params.get("force"):
+        return {"written": False, "exists": True, "path": str(output_path), "preview": sql}
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(sql, encoding="utf-8")
+    return {"written": True, "exists": False, "path": str(output_path), "preview": sql}
+
+
 _METHODS: dict[str, Callable[[dict], dict]] = {
     "ping": _m_ping,
     "profile.run": _m_profile_run,
@@ -455,6 +480,7 @@ _METHODS: dict[str, Callable[[dict], dict]] = {
     "review.finalize": _m_review_finalize,
     "metamodel.query_loss_runs": _m_metamodel_query_loss_runs,
     "tracker.check": _m_tracker_check,
+    "sql.generate_staging_model": _m_sql_generate_staging_model,
 }
 
 

@@ -454,9 +454,51 @@ Concretely:
    `pasl` (1 run, Layer 0 metrics), `pasm` (2 runs), and a nonexistent
    source (`metamodel_available: true`, empty `loss_runs`, no error). Not
    yet re-verified in a live Extension Host after this change.
-7. **dbt scaffolding** (#3) — last, since it's the only feature that
-   writes new files into the (separate) warehouse repo's territory and
-   needs the most care around overwrite confirmation.
+7. **dbt scaffolding** (#3) — **done.** `schema_inference/sql_scaffold.py`
+   (new, pure-function module — `generate_staging_model_sql(definition:
+   MappingDefinition) -> str`) renders the standard dbt staging-model
+   shape (`source` CTE -> `renamed` CTE -> final `select`), column order
+   following the target canonical schema's declaration order
+   (`canonical_registry.get_fields`), not the source file's column order —
+   matches "the staging model's CAST'd output is the authoritative target
+   shape" (mapper-agent-roadmap.md). Every canonical field gets a line:
+   the approved mapping's `sql_expression` if one exists, else its
+   `missing_field_resolutions` entry (NULL/hardcoded literal, quoted and
+   `'`-escaped for string/date types/derived SQL as-is), else a bare
+   `NULL` fallback so the generated model always has every target column.
+   `extended_attributes` columns get packed into a Snowflake
+   `object_construct(...)`. Explicitly *not* attempting to match the real
+   `stg_pas*_*.sql` conventions exactly -- that file lives in the separate
+   warehouse repo, inaccessible from here (CLAUDE.md's "Relationship to
+   other repos") -- the generated header comment says so and frames the
+   output as a starting point, not a drop-in.
+
+   `bridge.py`'s `sql.generate_staging_model` (`definition_path`,
+   `output_path`, `force`) is a thin wrapper, as always: loads the
+   `MappingDefinition`, calls the pure function, and enforces "never
+   overwrite silently" itself — if `output_path` exists and `force` isn't
+   set, returns `{written: false, exists: true, preview: sql}` instead of
+   writing, so the caller can confirm first. `ReviewPanel.
+   generateStagingModel()` is the caller: enabled only after `finalize`
+   succeeds (needs a `MappingDefinition` on disk), prompts a save dialog,
+   and on `exists: true` shows a **modal** confirm (`showWarningMessage`
+   with `{modal: true}`) before retrying with `force: true` — the same
+   destructive-action caution as the CLI's `--force-accept-breaking` on
+   `track` (sec 3.5 / sec 5's "never auto-promote" spirit, applied to file
+   writes instead of mapping decisions).
+
+   Verified: 5 new `pytest` unit tests for `generate_staging_model_sql`
+   (mapped columns, skipped mappings don't leak into the `SELECT`, all
+   three `MissingFieldResolution` kinds, unmapped-with-no-resolution
+   fallback, quote-escaping in hardcoded literals) plus a `test_bridge.py`
+   case driving the full profile -> map -> review -> finalize -> generate
+   flow and confirming the second call without `force` doesn't touch a
+   file that was hand-edited in between. `tsc --strict` clean. A Node
+   harness against the compiled `BridgeClient` and the real bridge
+   subprocess confirmed the write / exists-without-force / force-overwrite
+   sequence end to end, output inspected directly. Not yet exercised in a
+   live Extension Host (save dialog, modal confirm, opening the generated
+   file in an editor tab).
 
 Each step should land as its own PR against `vscode/` + the corresponding
 `schema_inference/` refactor, in that order — this also gives the "initial

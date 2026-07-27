@@ -11,7 +11,15 @@ const FLAGGED_TIER = 0.5;
 type Decision = { action: 'accepted' | 'modified' | 'skipped'; target_field: string | null };
 
 interface WebviewInboundMessage {
-  command: 'accept' | 'modify' | 'skip' | 'resolveMissingField' | 'resolveContest' | 'assignExtendedAttr' | 'finalize';
+  command:
+    | 'accept'
+    | 'modify'
+    | 'skip'
+    | 'resolveMissingField'
+    | 'resolveContest'
+    | 'assignExtendedAttr'
+    | 'finalize'
+    | 'generateSql';
   source_column?: string;
   target_field?: string | null;
   sql_expression?: string;
@@ -56,6 +64,7 @@ export class ReviewPanel {
   private readonly mappingsByCol = new Map<string, ColumnMapping>();
   private readonly decisions = new Map<string, Decision>();
   private readonly contestsResolved = new Set<string>();
+  private definitionPath: string | undefined;
 
   private constructor(
     private readonly bridge: BridgeClient,
@@ -161,10 +170,14 @@ export class ReviewPanel {
           const resp = await this.bridge.request<{ definition_path: string }>('review.finalize', {
             session_id: this.sessionId,
           });
+          this.definitionPath = resp.definition_path;
           void this.panel.webview.postMessage({ command: 'finalized', definitionPath: resp.definition_path });
           vscode.window.showInformationMessage(`Schema Inference: review saved -> ${resp.definition_path}`);
           return;
         }
+        case 'generateSql':
+          await this.generateStagingModel();
+          return;
         default:
           return;
       }
@@ -183,6 +196,60 @@ export class ReviewPanel {
       decisions,
       contestsResolved: [...this.contestsResolved],
     });
+  }
+
+  /**
+   * MAP-7 step 7: dbt staging model scaffolding. Never overwrites an
+   * existing file silently -- if the bridge reports the target already
+   * exists, this shows a modal confirm before retrying with force=true.
+   * Same destructive-action caution as the CLI's --force-accept-breaking
+   * flag on `track` (design doc sec 3.5 / sec 5).
+   */
+  private async generateStagingModel(): Promise<void> {
+    if (!this.definitionPath) {
+      vscode.window.showWarningMessage('Schema Inference: finalize the review before generating a staging model.');
+      return;
+    }
+
+    const defaultName = `stg_${this.start.source_name}_${this.start.table_name}.sql`;
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const defaultUri = workspaceRoot ? vscode.Uri.joinPath(workspaceRoot, defaultName) : undefined;
+
+    const target = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { SQL: ['sql'] },
+      title: 'Save dbt staging model as...',
+    });
+    if (!target) return;
+
+    try {
+      let resp = await this.bridge.request<{ written: boolean; exists: boolean; path: string; preview: string }>(
+        'sql.generate_staging_model',
+        { definition_path: this.definitionPath, output_path: target.fsPath },
+      );
+
+      if (!resp.written && resp.exists) {
+        const choice = await vscode.window.showWarningMessage(
+          `${resp.path} already exists. Overwrite it?`,
+          { modal: true },
+          'Overwrite',
+        );
+        if (choice !== 'Overwrite') return;
+        resp = await this.bridge.request('sql.generate_staging_model', {
+          definition_path: this.definitionPath,
+          output_path: target.fsPath,
+          force: true,
+        });
+      }
+
+      void this.panel.webview.postMessage({ command: 'sqlGenerated', path: resp.path });
+      const doc = await vscode.workspace.openTextDocument(target);
+      await vscode.window.showTextDocument(doc, vscode.ViewColumn.Active);
+      vscode.window.showInformationMessage(`Schema Inference: staging model written -> ${resp.path}`);
+    } catch (err) {
+      const message = err instanceof BridgeError ? err.message : String(err);
+      vscode.window.showErrorMessage(`Schema Inference: ${message}`);
+    }
   }
 
   private render(): string {
@@ -327,6 +394,8 @@ export class ReviewPanel {
   <div id="footer">
     <button id="finalize">Finalize review</button>
     <span id="finalize-state"></span>
+    <button id="generate-sql" disabled>Generate dbt Staging Model</button>
+    <span id="sql-state"></span>
   </div>
 
 <script nonce="${nonce}">
@@ -393,6 +462,10 @@ export class ReviewPanel {
     vscode.postMessage({ command: 'finalize' });
   });
 
+  document.getElementById('generate-sql').addEventListener('click', () => {
+    vscode.postMessage({ command: 'generateSql' });
+  });
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     const banner = document.getElementById('banner');
@@ -408,6 +481,9 @@ export class ReviewPanel {
     } else if (msg.command === 'finalized') {
       document.getElementById('finalize-state').textContent = 'Saved -> ' + msg.definitionPath;
       document.getElementById('finalize').disabled = true;
+      document.getElementById('generate-sql').disabled = false;
+    } else if (msg.command === 'sqlGenerated') {
+      document.getElementById('sql-state').textContent = 'Saved -> ' + msg.path;
     }
   });
 

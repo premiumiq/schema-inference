@@ -25,9 +25,19 @@ Build order progress (see design doc §6 for detail):
    `TreeDataProvider` under the Explorer view container, backed by
    `metamodel.query_loss_runs`. Refresh via the view-title button or
    "Schema Inference: Refresh Mapping Health".
-7. dbt staging model scaffolding — next (last per the design doc's build
-   order, since it's the only feature writing into the separate warehouse
-   repo's territory).
+7. dbt staging model scaffolding — done: `schema_inference/sql_scaffold.py`
+   generates a `stg_{source}_{table}.sql` stub from a finalized
+   `MappingDefinition`; `sql.generate_staging_model` bridge call and a
+   "Generate dbt Staging Model" button in the review panel (enabled after
+   Finalize) never overwrite an existing file without an explicit modal
+   confirm.
+
+All seven build-order steps from the design doc are now implemented.
+Remaining before this is more than a spike: a full live Extension Host
+pass covering everything (hover, review panel, health sidebar, dbt
+scaffolding including the overwrite-confirm dialog), and the open
+questions in the design doc sec 7 that haven't come up in practice yet
+(packaging/distribution, multiple bridge processes).
 
 ## Planned scope
 
