@@ -17,6 +17,7 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from rich import box
 from rich.console import Console
@@ -92,6 +93,133 @@ def _display_column_panel(m: ColumnMapping, tier_label: str) -> None:
     console.print(Panel(body, title=f"[bold]{m.source_column}[/bold]", border_style="blue"))
 
 
+# ─── Decision functions (MAP-7: non-interactive, one call = one action) ───────
+#
+# Pure functions with no I/O — each takes a ColumnMapping plus the reviewer's
+# already-decided action and returns the resulting ApprovedMapping. Extracted
+# from the old input()-driven _prompt_action so a single column decision can
+# be made standalone, in any order, over an RPC call (VS Code extension) —
+# not just inline in a blocking terminal loop. The CLI phases below now call
+# these same functions after collecting input via Prompt.ask; they must stay
+# thin wrappers, not reimplement the decision.
+
+
+class UnknownTargetFieldError(ValueError):
+    """Raised by modify_mapping when new_target isn't a known canonical field."""
+
+
+def accept_mapping(m: ColumnMapping) -> ApprovedMapping:
+    return ApprovedMapping(
+        source_column=m.source_column,
+        source_table=m.source_table,
+        target_field=m.target_field,
+        sql_expression=m.sql_expression,
+        confidence=m.confidence,
+        method=m.method,
+        notes=m.notes,
+        reviewer_action="accepted",
+    )
+
+
+def modify_mapping(
+    m: ColumnMapping,
+    *,
+    target_field: str | None,
+    sql_expression: str,
+    notes: str,
+    canonical_names: frozenset[str] = CANONICAL_NAMES,
+) -> ApprovedMapping:
+    """target_field=None routes the column to extended_attributes.
+
+    Raises UnknownTargetFieldError if target_field is set but not a known
+    canonical field — caller decides how to recover (CLI re-prompts; RPC
+    caller returns the error to the client).
+    """
+    if target_field and target_field not in canonical_names:
+        raise UnknownTargetFieldError(
+            f"Unknown field '{target_field}'. Valid names: {', '.join(sorted(canonical_names))}"
+        )
+    return ApprovedMapping(
+        source_column=m.source_column,
+        source_table=m.source_table,
+        target_field=target_field,
+        sql_expression=sql_expression or m.sql_expression,
+        confidence=m.confidence,
+        method="manual",
+        notes=notes,
+        reviewer_action="modified",
+    )
+
+
+def skip_mapping(m: ColumnMapping) -> ApprovedMapping:
+    return ApprovedMapping(
+        source_column=m.source_column,
+        source_table=m.source_table,
+        target_field=None,
+        sql_expression=m.source_column,
+        confidence=m.confidence,
+        method=m.method,
+        notes="Skipped by reviewer",
+        reviewer_action="skipped",
+    )
+
+
+def resolve_missing_field(
+    field_name: str,
+    resolution: Literal["NULL", "HARDCODED", "DERIVED"],
+    *,
+    hardcoded_value: str | None = None,
+    derivation_sql: str | None = None,
+) -> MissingFieldResolution:
+    if resolution == "HARDCODED":
+        return MissingFieldResolution(
+            target_field=field_name, resolution="HARDCODED", hardcoded_value=hardcoded_value
+        )
+    if resolution == "DERIVED":
+        return MissingFieldResolution(
+            target_field=field_name, resolution="DERIVED", derivation_sql=derivation_sql
+        )
+    return MissingFieldResolution(target_field=field_name, resolution="NULL")
+
+
+def apply_contest_resolution(
+    target: str,
+    competing: list[str],
+    winner: str | None,
+    approved_by_col: dict[str, ApprovedMapping],
+) -> None:
+    """MAP-3 contest resolution for one target field. Mutates approved_by_col
+    in place: winner keeps target, the rest are demoted to unmapped."""
+    for col in competing:
+        am = approved_by_col.get(col)
+        if am is None:
+            continue
+        if col == winner:
+            am.target_field = target
+            am.reviewer_action = "modified"
+            am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer chose as {target} winner]"
+        else:
+            am.target_field = None
+            am.reviewer_action = "modified"
+            am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer: not {target}]"
+
+
+def assign_extended_attr(
+    col: str,
+    *,
+    keep_as_extended: bool,
+    target: str | None = None,
+    canonical_names: frozenset[str] = CANONICAL_NAMES,
+) -> tuple[bool, str | None]:
+    """Returns (kept_as_extended, warning). warning is set when a caller tried
+    to map `col` to a known canonical field — MappingDefinition has no slot to
+    record that reassignment outside of ApprovedMapping, so it's surfaced as a
+    note rather than silently applied (same limitation the CLI already had)."""
+    if keep_as_extended or not target or target not in canonical_names:
+        return True, None
+    return False, f"mapping '{col}' -> '{target}' recorded in notes only; update approved_mappings manually if needed"
+
+
 def _prompt_action(m: ColumnMapping) -> tuple[ApprovedMapping, bool]:
     """Prompt [A]ccept / [M]odify / [S]kip. Returns (ApprovedMapping, added_to_extended)."""
     while True:
@@ -102,19 +230,7 @@ def _prompt_action(m: ColumnMapping) -> tuple[ApprovedMapping, bool]:
         ).lower()
 
         if choice == "a":
-            return (
-                ApprovedMapping(
-                    source_column=m.source_column,
-                    source_table=m.source_table,
-                    target_field=m.target_field,
-                    sql_expression=m.sql_expression,
-                    confidence=m.confidence,
-                    method=m.method,
-                    notes=m.notes,
-                    reviewer_action="accepted",
-                ),
-                False,
-            )
+            return accept_mapping(m), False
 
         if choice == "m":
             canonical_list = sorted(CANONICAL_NAMES)
@@ -123,45 +239,22 @@ def _prompt_action(m: ColumnMapping) -> tuple[ApprovedMapping, bool]:
                 default=m.target_field or "",
             ).strip()
             new_target: str | None = new_target_raw or None
-            if new_target and new_target not in CANONICAL_NAMES:
-                console.print(
-                    f"[red]Unknown field '{new_target}'. "
-                    f"Valid names: {', '.join(sorted(CANONICAL_NAMES))}[/red]"
-                )
-                continue
             new_sql = Prompt.ask(
                 "SQL expression",
                 default=m.sql_expression,
             ).strip()
             new_notes = Prompt.ask("Notes (optional)", default=m.notes).strip()
-            return (
-                ApprovedMapping(
-                    source_column=m.source_column,
-                    source_table=m.source_table,
-                    target_field=new_target,
-                    sql_expression=new_sql or m.sql_expression,
-                    confidence=m.confidence,
-                    method="manual",
-                    notes=new_notes,
-                    reviewer_action="modified",
-                ),
-                new_target is None,
-            )
+            try:
+                am = modify_mapping(
+                    m, target_field=new_target, sql_expression=new_sql, notes=new_notes
+                )
+            except UnknownTargetFieldError as exc:
+                console.print(f"[red]{exc}[/red]")
+                continue
+            return am, am.target_field is None
 
         if choice == "s":
-            return (
-                ApprovedMapping(
-                    source_column=m.source_column,
-                    source_table=m.source_table,
-                    target_field=None,
-                    sql_expression=m.source_column,
-                    confidence=m.confidence,
-                    method=m.method,
-                    notes="Skipped by reviewer",
-                    reviewer_action="skipped",
-                ),
-                True,
-            )
+            return skip_mapping(m), True
 
 
 # ─── Review phases ────────────────────────────────────────────────────────────
@@ -247,30 +340,13 @@ def _phase_missing_fields(
             default="1",
         )
         if choice == "1":
-            resolutions.append(
-                MissingFieldResolution(
-                    target_field=field_name,
-                    resolution="NULL",
-                )
-            )
+            resolutions.append(resolve_missing_field(field_name, "NULL"))
         elif choice == "2":
             val = Prompt.ask(f"  Hardcoded value for {field_name}").strip()
-            resolutions.append(
-                MissingFieldResolution(
-                    target_field=field_name,
-                    resolution="HARDCODED",
-                    hardcoded_value=val,
-                )
-            )
+            resolutions.append(resolve_missing_field(field_name, "HARDCODED", hardcoded_value=val))
         else:
             sql = Prompt.ask(f"  SQL expression for {field_name}").strip()
-            resolutions.append(
-                MissingFieldResolution(
-                    target_field=field_name,
-                    resolution="DERIVED",
-                    derivation_sql=sql,
-                )
-            )
+            resolutions.append(resolve_missing_field(field_name, "DERIVED", derivation_sql=sql))
 
     return resolutions
 
@@ -316,18 +392,7 @@ def _phase_contested_mappings(
         else:
             winner = competing[int(choice) - 1]
 
-        for col in competing:
-            am = approved_by_col.get(col)
-            if am is None:
-                continue
-            if col == winner:
-                am.target_field = target
-                am.reviewer_action = "modified"
-                am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer chose as {target} winner]"
-            else:
-                am.target_field = None
-                am.reviewer_action = "modified"
-                am.notes = (am.notes + " | " if am.notes else "") + f"[reviewer: not {target}]"
+        apply_contest_resolution(target, competing, winner, approved_by_col)
 
 def _phase_extended_attrs(
     extended_columns: list[str],
@@ -364,17 +429,14 @@ def _phase_extended_attrs(
             choices=["e", "m", "E", "M"],
             default="e",
         ).lower()
-        if assign == "e":
-            kept.append(col)
-        else:
+        target = None
+        if assign == "m":
             target = Prompt.ask(f"  Target field for '{col}'").strip()
-            if target in CANONICAL_NAMES:
-                console.print(
-                    f"  [yellow]Note: mapping '{col}' → '{target}' recorded in notes only. "
-                    f"Update approved_mappings manually if needed.[/yellow]"
-                )
-            else:
-                kept.append(col)
+        keep, warning = assign_extended_attr(col, keep_as_extended=(assign == "e"), target=target)
+        if warning:
+            console.print(f"  [yellow]Note: {warning}.[/yellow]")
+        if keep:
+            kept.append(col)
 
     return kept
 

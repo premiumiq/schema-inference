@@ -326,7 +326,18 @@ be schema-aware (per-table, via `canonical/registry.py`) rather than
 assuming one flat target; design against `pasl_policy` + `pasm_policy` +
 `pasm_coverage` as the reference tables, not just one.
 
-**All dependencies clear. Design spike is the next step.** Not yet started.
+**Design spike — done.** See dedicated design doc —
+[`map-7-vscode-extension-design.md`](map-7-vscode-extension-design.md).
+JSON-RPC-over-stdio bridge (not LSP — LSP's message shapes fit only the
+hover/diagnostics slice, not the health sidebar or contested-mapping panel),
+new `schema_inference/bridge.py`, extension lives in `vscode/`. Key finding:
+the first implementation PR is a **refactor of `reviewer.py`** (extracting
+its per-column decision logic out of the synchronous `input()` loop into
+functions callable one-at-a-time over RPC), not extension code — flagged so
+it isn't discovered mid-build. Build order and open questions (webview vs.
+native tree view, packaging/distribution, multi-root workspaces) are in the
+design doc's §6–7.
+
 Remaining PAS-M table coverage (`pasm_premium_register`, `pasm_transaction_log`
 — see MAP-4.1) is deliberately postponed until after this spike and an
 initial implementation land, so the UI design is informed by a real (if
@@ -354,8 +365,9 @@ partial) multi-table dataset without blocking on exhaustive catalog work.
 3. ~~**Live Layer 2 run on PAS-M**~~ — done; no improving candidate found, correctly
    rejected (see MAP-4 Layer 2 above).
 4. ~~**Multi-schema canonical targets + `pasm_coverage` template**~~ — done (MAP-4.1).
-5. **MAP-7 design spike** — VS Code extension architecture. All dependencies clear
-   — this is the next task.
+5. ~~**MAP-7 design spike**~~ — done, see `map-7-vscode-extension-design.md`.
+   **MAP-7 initial implementation** (reviewer.py refactor → bridge.py →
+   extension shell, per the design doc's build order) — next task.
 6. **Remaining PAS-M table coverage** (`pasm_premium_register`,
    `pasm_transaction_log`) — postponed until after MAP-7's design spike and
    initial implementation land (see MAP-4.1 for the exact onboarding steps).

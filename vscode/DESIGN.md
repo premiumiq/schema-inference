@@ -1,6 +1,11 @@
 # VS Code Extension — Design (MAP-7)
 
-Placeholder. Extension code will live here once the design spike is complete.
+Design spike complete — full architecture, bridge protocol, refactor
+requirements, failure modes, and build order at
+[`docs/map-7-vscode-extension-design.md`](../docs/map-7-vscode-extension-design.md).
+Extension code will live in this directory once initial implementation
+starts (build order step 1 is a `schema_inference/reviewer.py` refactor,
+not extension code — see design doc §3.3 and §6).
 
 ## Planned scope
 
