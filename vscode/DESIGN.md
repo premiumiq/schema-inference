@@ -11,8 +11,14 @@ Build order progress (see design doc §6 for detail):
    lifecycle (`src/bridgeClient.ts`), hover provider + inline annotations
    (`src/extension.ts`). `npm install && npm run compile` to build; open
    this folder in VS Code and press F5 for an Extension Development Host
-   to try it against a real workspace.
-4. Review panel (webview) — next.
+   to try it against a real workspace. Manually verified end to end
+   against `pasl_policy.dat` (activation, bridge spawn, profile+map,
+   header-row hover cards).
+4. Review panel (webview, `src/reviewPanel.ts`) — done: accept/modify/skip
+   per column, missing-field and contested-mapping resolution, finalize.
+   Manually verified end to end in the same Extension Development Host run
+   — full review completed and `MappingDefinition` JSON written to disk.
+5. Contested + row-shape panel polish, mapping health sidebar — next.
 
 ## Planned scope
 

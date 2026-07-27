@@ -358,9 +358,10 @@ Concretely:
    real `schema_inference.bridge` subprocess (`ping` → `profile.run` →
    `map.run` on the `pasl_policy` CI fixture) — confirmed the TS client's
    newline-JSON framing is wire-compatible with the Python side, not just
-   type-correct in isolation. No VS Code Extension Host smoke test yet
-   (would need an interactive VS Code window); that's the natural next
-   verification step before this goes further, not before step 4.
+   type-correct in isolation. Since confirmed live in a real Extension
+   Development Host too (see step 4's note) — activation, bridge spawn,
+   `Profile & Map Current File`, and header-row hover cards all work
+   end to end against `pasl_policy.dat`.
 4. **Review panel** (#2) — **done.** `vscode/src/reviewPanel.ts`: a
    `WebviewPanel` (`ReviewPanel.createOrShow`, singleton — reveals the
    existing panel rather than opening a second one) driven entirely by the
@@ -391,12 +392,19 @@ Concretely:
    never what gets written to disk.
 
    Verified: `tsc --strict` compiles clean with the new file wired in
-   (`out/reviewPanel.js` present). Not yet verified inside a real VS Code
-   Extension Development Host (webview message-passing and DOM/CSP
-   behavior can't be exercised without one) — same caveat as step 3's
-   hover provider, now compounded across two unverified UI surfaces. That
-   combined gap is the natural checkpoint before step 5, not something to
-   keep deferring indefinitely.
+   (`out/reviewPanel.js` present), and manually end to end in a live VS
+   Code Extension Development Host against `pasl_policy.dat` -- opened the
+   panel, worked through accept/modify/skip across the confidence tiers,
+   resolved missing fields and contested mappings, clicked Finalize, and
+   confirmed the `MappingDefinition` JSON was written to disk. Webview
+   CSP/message-passing behavior (the part `tsc` and the Python-side tests
+   can't reach) is now confirmed working, not just plausible from code
+   review.
+
+   Not yet exercised: the crash-recovery path (kill the bridge process
+   externally, confirm the "Restart Bridge" / "Select Python Interpreter"
+   notification appears) and the Debug Console for stray exceptions during
+   the above run. Worth a quick pass before step 5, not a blocker.
 5. **Contested + row-shape panels** (#5, #6) — no new bridge calls needed,
    pure UI work once #2's webview scaffolding exists.
 6. **Health sidebar** (#4) — separate webview, `metamodel.query_loss_runs`.
