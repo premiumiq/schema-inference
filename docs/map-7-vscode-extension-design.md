@@ -328,9 +328,39 @@ Concretely:
    `io.StringIO` streams for the newline-framing itself). Full suite:
    28 passed, 1 skipped (`test_contest.py`'s `@pytest.mark.anthropic` test,
    no API key set) — no regressions.
-3. **Extension shell** (`vscode/`) — activation, bridge process
-   lifecycle, hover provider + inline annotations only (#1). Smallest
-   end-to-end slice: profile a `.dat` file, see hover cards.
+3. **Extension shell** (`vscode/`) — **done.** TypeScript, compiles clean
+   (`npm run compile`, strict mode). `src/bridgeClient.ts` is the JSON-RPC
+   client: spawns `{pythonPath} -m schema_inference.bridge`, newline-framed
+   request/response correlated by id, rejects in-flight requests and
+   surfaces an error notification (`Restart Bridge` / `Select Python
+   Interpreter` actions) if the process exits unexpectedly. `src/types.ts`
+   hand-mirrors the `models.py` subset the extension touches — no shared
+   codegen yet, noted as a reasonable later follow-up once the wire shape
+   stabilizes. `src/extension.ts`: activation via the same
+   `workspaceContains:**/schema_inference/agent_config.yml` event as §3.4,
+   command `Schema Inference: Profile & Map Current File` (runs
+   `profile.run` then rule-only `map.run` — agent pipeline deferred until
+   `map.progress` notifications exist to show status during a long call),
+   and a `HoverProvider` for `**/*.dat`/`**/*.csv` that reads the cached
+   `MappingProposal` for the open file, splits the header row (line 0) by
+   the profiled delimiter, and shows target/confidence/method/notes for
+   the column under the cursor.
+
+   Python interpreter resolution simplified from §3.4's full plan: reads
+   `schemaInference.pythonPath` if set, else falls back to `python`/
+   `python3` by platform — no ms-python extension-API integration yet.
+   `promptForInterpreter()` (file picker → workspace setting → bridge
+   restart) is the recovery path when that guess is wrong, satisfying the
+   same "select interpreter" requirement without the added API surface.
+
+   Validated two ways: `tsc` strict-mode compile with no errors, and a
+   throwaway Node script driving the compiled `BridgeClient` against the
+   real `schema_inference.bridge` subprocess (`ping` → `profile.run` →
+   `map.run` on the `pasl_policy` CI fixture) — confirmed the TS client's
+   newline-JSON framing is wire-compatible with the Python side, not just
+   type-correct in isolation. No VS Code Extension Host smoke test yet
+   (would need an interactive VS Code window); that's the natural next
+   verification step before this goes further, not before step 4.
 4. **Review panel** (#2) — webview wired to the refactored reviewer calls.
 5. **Contested + row-shape panels** (#5, #6) — no new bridge calls needed,
    pure UI work once #2's webview scaffolding exists.

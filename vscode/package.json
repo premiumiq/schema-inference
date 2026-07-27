@@ -1,0 +1,53 @@
+{
+  "name": "schema-inference-vscode",
+  "displayName": "Schema Inference",
+  "description": "MAP-7: inline column mapping annotations, driven by the schema_inference JSON-RPC bridge.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/schema_inference/agent_config.yml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "schemaInference.profileAndMap",
+        "title": "Schema Inference: Profile & Map Current File"
+      },
+      {
+        "command": "schemaInference.restartBridge",
+        "title": "Schema Inference: Restart Bridge Process"
+      }
+    ],
+    "configuration": {
+      "title": "Schema Inference",
+      "properties": {
+        "schemaInference.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Python interpreter with schema_inference installed (pip install -e \".[dev]\"). Leave blank to auto-detect."
+        },
+        "schemaInference.sourceName": {
+          "type": "string",
+          "default": "",
+          "description": "Logical source name passed to profile/map (e.g. pasl, pasm). Prompted if unset."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

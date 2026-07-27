@@ -3,9 +3,16 @@
 Design spike complete — full architecture, bridge protocol, refactor
 requirements, failure modes, and build order at
 [`docs/map-7-vscode-extension-design.md`](../docs/map-7-vscode-extension-design.md).
-Extension code will live in this directory once initial implementation
-starts (build order step 1 is a `schema_inference/reviewer.py` refactor,
-not extension code — see design doc §3.3 and §6).
+
+Build order progress (see design doc §6 for detail):
+1. `schema_inference/reviewer.py` refactor — done.
+2. `schema_inference/bridge.py` (JSON-RPC server) — done.
+3. Extension shell (this directory) — done: activation, bridge process
+   lifecycle (`src/bridgeClient.ts`), hover provider + inline annotations
+   (`src/extension.ts`). `npm install && npm run compile` to build; open
+   this folder in VS Code and press F5 for an Extension Development Host
+   to try it against a real workspace.
+4. Review panel (webview) — next.
 
 ## Planned scope
 
