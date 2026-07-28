@@ -40,7 +40,10 @@ import yaml
 
 from schema_inference.metamodel.store import open_store
 
-GROUND_TRUTH_DIR = _REPO_ROOT / "ground_truth"
+GROUND_TRUTH_DIR = Path(
+    __import__("os").environ.get("SCHEMA_INFERENCE_CATALOG_DIR")
+    or str(_REPO_ROOT / "examples" / "insurance" / "ground_truth")
+)
 
 
 def _load_hard_columns(source_name: str) -> set[str]:

@@ -52,6 +52,7 @@ import sys
 import tempfile
 from pathlib import Path
 from statistics import mean, pstdev
+from typing import Callable
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -373,7 +374,13 @@ def run_tuning_session(
     seed: int = 42,
     diagnosis_client=None,
     tuner_client=None,
+    on_round: Callable[[int, dict], None] | None = None,
 ) -> dict:
+    """on_round: invoked once per completed round with the same dict
+    appended to rounds_log (round/version_id/loss_before/loss_after/
+    improved/regressed) -- used by the VS Code bridge (tuning.progress
+    notifications) to stream a Layer 2 session's progress. Default None is
+    a no-op, same pattern as agents.orchestrator.run_mapping's on_stage."""
     data_file = Path(data_file) if data_file else DEFAULT_DATA_FILE.get(source_name)
     if not data_file or not data_file.exists():
         raise FileNotFoundError(f"No data file for source '{source_name}'. Pass data_file explicitly.")
@@ -460,11 +467,14 @@ def run_tuning_session(
               + (f"  regressed: {regressed}" if regressed else ""))
         print(f"  logged as prompt_version {version_id}")
 
-        rounds_log.append({
+        round_info = {
             "round": round_num, "version_id": version_id,
             "loss_before": best_loss, "loss_after": holdout_metrics.mean_loss,
             "improved": improved, "regressed": regressed,
-        })
+        }
+        rounds_log.append(round_info)
+        if on_round:
+            on_round(round_num, round_info)
 
         if improved:
             best_prompt = candidate["prompt"]

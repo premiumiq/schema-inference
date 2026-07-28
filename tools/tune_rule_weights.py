@@ -221,43 +221,60 @@ def _log_tuning_run(
         store.close()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Callable core (CLI's main() below is a thin wrapper around this) ──────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="MAP-4 Layer 0: tune rule-engine confidence weights against ground truth.")
-    parser.add_argument("--source-name", default="pasl", help="Logical source name (default: pasl)")
-    parser.add_argument("--data-file", default=None, help="Flat file to profile (default: schema_inference/test_data/pasl_policy.dat for pasl)")
-    parser.add_argument("--step", type=float, default=0.05, help="Grid step size (default: 0.05; smaller = finer/slower)")
-    parser.add_argument("--apply", action="store_true", help="Write the winning weights to agent_config.yml (default: dry run, report only)")
-    parser.add_argument("--top", type=int, default=5, help="How many top candidates to print (default: 5)")
-    args = parser.parse_args()
+def _weights_dict(w: tuple[float, float, float]) -> dict:
+    return {"name_sim": w[0], "type_compat": w[1], "pattern_bonus": w[2]}
 
-    data_file = Path(args.data_file) if args.data_file else DEFAULT_DATA_FILE.get(args.source_name)
+
+def _metrics_dict(m: "scorer.AggregateMetrics") -> dict:
+    return {"mean_loss": m.mean_loss, "f1": m.f1, "hard_f1": m.hard_f1}
+
+
+def run_layer0_tuning(
+    source_name: str = "pasl",
+    data_file: str | Path | None = None,
+    step: float = 0.05,
+    apply: bool = False,
+    top: int = 5,
+) -> dict:
+    """MAP-4 Layer 0 tuning, callable from anywhere (CLI's main(), or the
+    VS Code bridge's tuning.run_layer0). Every print() below is an
+    intentional side effect for terminal users, unchanged from before this
+    was extracted from main() — a non-CLI caller (bridge) uses the
+    returned dict and ignores stdout, same as every other tool in this
+    repo that prints informationally.
+
+    Raises FileNotFoundError if no data file is found/given.
+    """
+    data_file = Path(data_file) if data_file else DEFAULT_DATA_FILE.get(source_name)
     if not data_file or not data_file.exists():
-        sys.exit(f"Error: no data file found for source '{args.source_name}' "
-                  f"(looked for {data_file}). Pass --data-file explicitly.")
+        raise FileNotFoundError(
+            f"no data file found for source '{source_name}' (looked for {data_file}). "
+            "Pass data_file explicitly."
+        )
 
     print(f"Profiling {data_file} ...")
-    profile = profile_file(data_file, source_name=args.source_name)
+    profile = profile_file(data_file, source_name=source_name)
     table = profile.tables[0]
     print(f"  {table.row_count} rows | {len(table.columns)} columns\n")
 
     # Baseline = whatever's currently active (weights=None -> _rule_weights() ->
     # agent_config.yml's current rule_engine.weights, or the hardcoded fallback).
     from schema_inference.mapper import _rule_weights
-    baseline_weights = _rule_weights(args.source_name)
+    baseline_weights = _rule_weights(source_name)
     print(f"Baseline weights (currently active): "
           f"name_sim={baseline_weights[0]:.2f} type_compat={baseline_weights[1]:.2f} pattern_bonus={baseline_weights[2]:.2f}")
-    baseline_proposal = _build_rule_proposal(table, args.source_name, weights=baseline_weights)
-    baseline_metrics = _score_proposal_dict(baseline_proposal, args.source_name)
+    baseline_proposal = _build_rule_proposal(table, source_name, weights=baseline_weights)
+    baseline_metrics = _score_proposal_dict(baseline_proposal, source_name)
     print(f"Baseline: mean_loss={baseline_metrics.mean_loss:.4f}  f1={baseline_metrics.f1:.4f}  hard_f1={baseline_metrics.hard_f1:.4f}\n")
 
-    print(f"Grid-searching weight simplex (step={args.step}) ...")
-    grid = _weight_grid(args.step)
+    print(f"Grid-searching weight simplex (step={step}) ...")
+    grid = _weight_grid(step)
     results: list[tuple[tuple[float, float, float], "scorer.AggregateMetrics"]] = []
     for w in grid:
-        proposal = _build_rule_proposal(table, args.source_name, weights=w)
-        metrics = _score_proposal_dict(proposal, args.source_name, silent=True)
+        proposal = _build_rule_proposal(table, source_name, weights=w)
+        metrics = _score_proposal_dict(proposal, source_name, silent=True)
         results.append((w, metrics))
 
     results.sort(key=lambda r: (r[1].mean_loss, -r[1].f1))
@@ -265,7 +282,7 @@ def main() -> None:
 
     print(f"\nEvaluated {len(grid)} weight combinations.\n")
     print(f"{'RANK':<5}{'NAME_SIM':>10}{'TYPE_COMPAT':>13}{'PATTERN':>10}{'MEAN_LOSS':>12}{'F1':>8}{'HARD_F1':>10}")
-    for i, (w, m) in enumerate(results[: args.top], start=1):
+    for i, (w, m) in enumerate(results[:top], start=1):
         print(f"{i:<5}{w[0]:>10.3f}{w[1]:>13.3f}{w[2]:>10.3f}{m.mean_loss:>12.4f}{m.f1:>8.4f}{m.hard_f1:>10.4f}")
 
     print(f"\nBest: name_sim={best_weights[0]:.3f} type_compat={best_weights[1]:.3f} pattern_bonus={best_weights[2]:.3f}")
@@ -275,18 +292,18 @@ def main() -> None:
     print(f"  hard_f1:   {baseline_metrics.hard_f1:.4f} -> {best_metrics.hard_f1:.4f}")
 
     applied = False
-    if args.apply:
+    if apply:
         if best_metrics.mean_loss < baseline_metrics.mean_loss:
-            _write_weights_to_config(best_weights, AGENT_CONFIG_PATH, args.source_name)
+            _write_weights_to_config(best_weights, AGENT_CONFIG_PATH, source_name)
             print(f"\nApplied — wrote weights to {AGENT_CONFIG_PATH}")
             applied = True
         else:
-            print("\n--apply given but best candidate does not improve on baseline; leaving agent_config.yml unchanged.")
+            print("\napply=True given but best candidate does not improve on baseline; leaving agent_config.yml unchanged.")
     else:
-        print("\nDry run (no --apply) — agent_config.yml not modified.")
+        print("\nDry run (apply=False) — agent_config.yml not modified.")
 
     _log_tuning_run(
-        source_name=args.source_name,
+        source_name=source_name,
         table_name=table.name,
         weights_before=baseline_weights,
         weights_after=best_weights,
@@ -297,12 +314,46 @@ def main() -> None:
 
     # ── llm_threshold sensitivity report (informational only) ────────────────
     print("\nllm_threshold sensitivity (under winning weights; informational, not auto-applied):")
-    best_proposal = _build_rule_proposal(table, args.source_name, weights=best_weights)
+    best_proposal = _build_rule_proposal(table, source_name, weights=best_weights)
     confidences = sorted(m["confidence"] for m in best_proposal["mappings"])
     print(f"{'THRESHOLD':>10}{'COLS ROUTED TO AGENT':>24}")
     for t in THRESHOLD_CANDIDATES:
         routed = sum(1 for c in confidences if c < t)
         print(f"{t:>10.2f}{routed:>24}")
+
+    return {
+        "source_name": source_name,
+        "table_name": table.name,
+        "baseline_weights": _weights_dict(baseline_weights),
+        "baseline_metrics": _metrics_dict(baseline_metrics),
+        "best_weights": _weights_dict(best_weights),
+        "best_metrics": _metrics_dict(best_metrics),
+        "applied": applied,
+        "top_candidates": [
+            {"weights": _weights_dict(w), **_metrics_dict(m)}
+            for w, m in results[:top]
+        ],
+    }
+
+
+# ── CLI ────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MAP-4 Layer 0: tune rule-engine confidence weights against ground truth.")
+    parser.add_argument("--source-name", default="pasl", help="Logical source name (default: pasl)")
+    parser.add_argument("--data-file", default=None, help="Flat file to profile (default: schema_inference/test_data/pasl_policy.dat for pasl)")
+    parser.add_argument("--step", type=float, default=0.05, help="Grid step size (default: 0.05; smaller = finer/slower)")
+    parser.add_argument("--apply", action="store_true", help="Write the winning weights to agent_config.yml (default: dry run, report only)")
+    parser.add_argument("--top", type=int, default=5, help="How many top candidates to print (default: 5)")
+    args = parser.parse_args()
+
+    try:
+        run_layer0_tuning(
+            source_name=args.source_name, data_file=args.data_file,
+            step=args.step, apply=args.apply, top=args.top,
+        )
+    except FileNotFoundError as exc:
+        sys.exit(f"Error: {exc}")
 
 
 if __name__ == "__main__":
