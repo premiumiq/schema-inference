@@ -1,8 +1,10 @@
 import { ChildProcess, spawn } from 'child_process';
 
-interface RpcResponse {
+interface RpcMessage {
   jsonrpc: '2.0';
-  id: number | string | null;
+  id?: number | string | null;
+  method?: string;
+  params?: unknown;
   result?: unknown;
   error?: { code: number; message: string };
 }
@@ -27,6 +29,14 @@ export class BridgeClient {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private stderrTail = '';
+
+  /** Server-initiated JSON-RPC notifications (no `id`) -- currently only
+   * `map.progress` during an agent-pipeline map.run. Public/mutable rather
+   * than a constructor param: only one caller drives an agent call at a
+   * time in this extension, so the caller sets this right before issuing
+   * that request and clears it in a `finally`, instead of needing a
+   * per-request correlation mechanism this single-flow UI doesn't need. */
+  onNotification: ((method: string, params: unknown) => void) | undefined;
 
   constructor(
     private readonly pythonPath: string,
@@ -70,13 +80,16 @@ export class BridgeClient {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line) continue;
 
-      let msg: RpcResponse;
+      let msg: RpcMessage;
       try {
         msg = JSON.parse(line);
       } catch {
         continue; // malformed line -- drop it, don't take down the client over one bad frame
       }
-      if (msg.id === null || msg.id === undefined) continue;
+      if (msg.id === null || msg.id === undefined) {
+        if (msg.method) this.onNotification?.(msg.method, msg.params);
+        continue;
+      }
 
       const id = Number(msg.id);
       const pending = this.pending.get(id);

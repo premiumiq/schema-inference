@@ -14,12 +14,18 @@ Not wired into any packaging/activation yet — this is build-order step 2
 (bridge only, no extension). Validate with a raw stdio harness /
 tests/test_bridge.py, not a VS Code install.
 
-Known limitation, deferred: no `map.progress` notifications yet.
-`agents.orchestrator.run_mapping` has no progress-callback hook, so
-`map.run` with agent=True blocks until the whole table finishes rather than
-streaming per-column AgentTrace events as the design doc's §3.2 example
-envisions. Adding that hook is separable follow-up work, not required to
-prove the request/response protocol end to end.
+`map.run` with `agent: true` streams `map.progress` notifications (no
+`id`, per JSON-RPC 2.0) at `agents.orchestrator.run_mapping`'s stage
+boundaries (rule_pass/mapping_agent/critic_agent/sql_agent/row_shape/done)
+— coarse-grained by design, not per-column, so it doesn't need a callback
+threaded through MappingAgent/CriticAgent/SQLAgent's own concurrency
+internals. `dispatch()`'s `notify` param is the plumbing: `serve()` passes
+one that writes straight to `out_stream`; `_m_map_run` never touches the
+stream directly, it just calls a module-level `_notify_sink` that
+`dispatch()` points at whatever `notify` was passed for the duration of
+one request (safe under `serve()`'s single-threaded synchronous loop —
+one request completes before the next line is read, so there's no
+concurrent access to worry about).
 """
 
 from __future__ import annotations
@@ -178,6 +184,7 @@ def _m_map_run(params: dict) -> dict:
             use_agent=True,
             concurrency=params.get("concurrency"),
             eval_mode=bool(params.get("eval")),
+            on_stage=lambda stage, info: _notify_sink("map.progress", {"stage": stage, **info}),
         )
         proposal = run.proposal
         result: dict[str, Any] = {
@@ -484,37 +491,55 @@ _METHODS: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def dispatch(request: dict) -> dict | None:
+def _noop_notify(method: str, params: dict) -> None:
+    pass
+
+
+_notify_sink: Callable[[str, dict], None] = _noop_notify
+
+
+def dispatch(request: dict, notify: Callable[[str, dict], None] | None = None) -> dict | None:
     """Handle one already-parsed JSON-RPC request. Returns the response dict,
-    or None for a notification (no 'id') — callers should not write those."""
-    id_ = request.get("id")
-    method = request.get("method")
-    params = request.get("params") or {}
+    or None for a notification (no 'id') — callers should not write those.
 
-    handler = _METHODS.get(method)
-    if handler is None:
-        if id_ is None:
-            return None
-        return {"jsonrpc": "2.0", "id": id_, "error": {"code": METHOD_NOT_FOUND, "message": f"unknown method '{method}'"}}
-
+    notify: called by a handler (currently only _m_map_run's agent branch)
+    to emit a server-initiated notification before the response is ready.
+    Defaults to a no-op — existing dispatch(request) call sites (tests,
+    non-agent methods) are unaffected."""
+    global _notify_sink
+    previous_sink = _notify_sink
+    _notify_sink = notify or _noop_notify
     try:
-        result = handler(params)
-    except RpcError as exc:
-        if id_ is None:
-            return None
-        return {"jsonrpc": "2.0", "id": id_, "error": {"code": exc.code, "message": exc.message}}
-    except (KeyError, TypeError) as exc:
-        if id_ is None:
-            return None
-        return {"jsonrpc": "2.0", "id": id_, "error": {"code": INVALID_PARAMS, "message": f"missing/invalid params: {exc}"}}
-    except Exception as exc:  # noqa: BLE001 — surface any pipeline error to the client rather than crashing the bridge
-        if id_ is None:
-            return None
-        return {"jsonrpc": "2.0", "id": id_, "error": {"code": APP_ERROR, "message": str(exc)}}
+        id_ = request.get("id")
+        method = request.get("method")
+        params = request.get("params") or {}
 
-    if id_ is None:
-        return None
-    return {"jsonrpc": "2.0", "id": id_, "result": result}
+        handler = _METHODS.get(method)
+        if handler is None:
+            if id_ is None:
+                return None
+            return {"jsonrpc": "2.0", "id": id_, "error": {"code": METHOD_NOT_FOUND, "message": f"unknown method '{method}'"}}
+
+        try:
+            result = handler(params)
+        except RpcError as exc:
+            if id_ is None:
+                return None
+            return {"jsonrpc": "2.0", "id": id_, "error": {"code": exc.code, "message": exc.message}}
+        except (KeyError, TypeError) as exc:
+            if id_ is None:
+                return None
+            return {"jsonrpc": "2.0", "id": id_, "error": {"code": INVALID_PARAMS, "message": f"missing/invalid params: {exc}"}}
+        except Exception as exc:  # noqa: BLE001 — surface any pipeline error to the client rather than crashing the bridge
+            if id_ is None:
+                return None
+            return {"jsonrpc": "2.0", "id": id_, "error": {"code": APP_ERROR, "message": str(exc)}}
+
+        if id_ is None:
+            return None
+        return {"jsonrpc": "2.0", "id": id_, "result": result}
+    finally:
+        _notify_sink = previous_sink
 
 
 def serve(in_stream=None, out_stream=None) -> None:
@@ -522,6 +547,10 @@ def serve(in_stream=None, out_stream=None) -> None:
     — e.g. the VS Code extension terminating the child process)."""
     in_stream = in_stream or sys.stdin
     out_stream = out_stream or sys.stdout
+
+    def notify(method: str, params: dict) -> None:
+        out_stream.write(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}, default=str) + "\n")
+        out_stream.flush()
 
     for line in in_stream:
         line = line.strip()
@@ -537,7 +566,7 @@ def serve(in_stream=None, out_stream=None) -> None:
             out_stream.flush()
             continue
 
-        response = dispatch(request)
+        response = dispatch(request, notify=notify)
         if response is not None:
             out_stream.write(json.dumps(response, default=str) + "\n")
             out_stream.flush()

@@ -161,6 +161,20 @@ async function checkForStaleness(uri: vscode.Uri): Promise<void> {
   }
 }
 
+const STAGE_LABELS: Record<string, string> = {
+  rule_pass: 'Rule pass complete',
+  mapping_agent: 'MappingAgent complete',
+  critic_agent: 'CriticAgent complete',
+  sql_agent: 'SQLAgent complete',
+  row_shape: 'Row shape inferred',
+  done: 'Finalizing...',
+};
+
+function describeStage(params: unknown): string {
+  const stage = (params as { stage?: string })?.stage;
+  return (stage && STAGE_LABELS[stage]) || 'Running agent pipeline...';
+}
+
 export function deactivate(): void {
   bridge?.stop();
   bridge = undefined;
@@ -186,6 +200,20 @@ async function profileAndMapCurrentFile(): Promise<void> {
   lastSourceName = sourceName;
   healthProvider?.refresh();
 
+  const pipelinePick = await vscode.window.showQuickPick(
+    [
+      { label: 'Rule-only (fast)', detail: 'No LLM calls -- name/type/pattern matching only.', useAgent: false },
+      {
+        label: 'Agent pipeline (slower, more accurate)',
+        detail: 'MappingAgent + CriticAgent + SQLAgent -- needs ANTHROPIC_API_KEY.',
+        useAgent: true,
+      },
+    ],
+    { placeHolder: 'How should columns be mapped?' },
+  );
+  if (!pipelinePick) return;
+  const useAgent = pipelinePick.useAgent;
+
   let client: BridgeClient;
   try {
     client = getBridge();
@@ -196,7 +224,7 @@ async function profileAndMapCurrentFile(): Promise<void> {
 
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'Schema Inference: profiling & mapping...' },
-    async () => {
+    async (progress) => {
       try {
         const profileResult = await client.request<ProfileRunResult>('profile.run', {
           file_path: filePath,
@@ -212,16 +240,32 @@ async function profileAndMapCurrentFile(): Promise<void> {
           `proposal_${profileResult.table_name}.json`,
         );
 
-        // Rule-only (no_llm) for this shell -- the agent pipeline is a
-        // later slice once map.progress notifications exist to show
-        // per-column status during a long-running agent call (see design
-        // doc's step-2 "deferred" note).
-        const mapResult = await client.request<MapRunResult>('map.run', {
-          profile_path: profileResult.profile_path,
-          table_name: profileResult.table_name,
-          no_llm: true,
-          output: proposalPath,
-        });
+        let mapResult: MapRunResult;
+        if (useAgent) {
+          // Single in-flight assumption: only this command drives an agent
+          // map.run call at a time, so a plain assignment (not a per-request
+          // correlation map) on the client's notification hook is enough.
+          client.onNotification = (method, params) => {
+            if (method === 'map.progress') progress.report({ message: describeStage(params) });
+          };
+          try {
+            mapResult = await client.request<MapRunResult>('map.run', {
+              profile_path: profileResult.profile_path,
+              table_name: profileResult.table_name,
+              agent: true,
+              output: proposalPath,
+            });
+          } finally {
+            client.onNotification = undefined;
+          }
+        } else {
+          mapResult = await client.request<MapRunResult>('map.run', {
+            profile_path: profileResult.profile_path,
+            table_name: profileResult.table_name,
+            no_llm: true,
+            output: proposalPath,
+          });
+        }
 
         proposalsByFile.set(filePath, {
           proposal: mapResult.proposal,

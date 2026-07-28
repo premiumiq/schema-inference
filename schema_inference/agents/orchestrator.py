@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime
+from typing import Callable
 
 from ..mapper import (
     DEFAULT_LLM_THRESHOLD,
@@ -78,6 +79,7 @@ def run_mapping(
     mapping_system_prompt: str | None = None,
     critic_system_prompt: str | None = None,
     record_to_metamodel: bool = True,
+    on_stage: Callable[[str, dict], None] | None = None,
 ) -> AgentMappingRun:
     """Run the agent mapping pipeline for one table.
 
@@ -111,6 +113,17 @@ def run_mapping(
                         is not a real mapping decision and must not pollute
                         the few-shot bank (MAP-4 Layer 1 scans mapping_history
                         for curation candidates).
+        on_stage:       Optional callback invoked at each of the pipeline's
+                        existing sequential stage boundaries (rule_pass,
+                        mapping_agent, critic_agent, sql_agent, row_shape,
+                        done), as (stage_name, info_dict). Coarse-grained by
+                        design -- reports progress between stages, not per
+                        column inside a stage, so it never has to reach into
+                        MappingAgent/CriticAgent/SQLAgent's own concurrency
+                        internals. Used by the VS Code bridge (MAP-7) to
+                        stream map.progress notifications during a long
+                        agent run instead of blocking silently; None (CLI,
+                        tests, tune_prompts.py) is a no-op.
 
     Returns:
         AgentMappingRun with the final proposal and all agent traces.
@@ -153,6 +166,8 @@ def run_mapping(
         rule_results[col.name] = m
 
     rule_pass_count = len(rule_results)
+    if on_stage:
+        on_stage("rule_pass", {"columns": rule_pass_count})
 
     # ── Step 2: MappingAgent on low-confidence columns ───────────────────────
     low_conf_cols = [
@@ -179,6 +194,8 @@ def run_mapping(
         traces.extend(agent_traces)
 
     agent_pass_count = len(agent_results)
+    if on_stage:
+        on_stage("mapping_agent", {"columns": agent_pass_count})
 
     # ── Merge: agent result wins when it improves confidence ─────────────────
     merged: list[ColumnMapping] = []
@@ -199,6 +216,8 @@ def run_mapping(
             system_prompt_override=critic_system_prompt,
         )
         traces.extend(critic_traces)
+        if on_stage:
+            on_stage("critic_agent", {"overrides": critic_overrides})
 
     # ── Step 4: SQLAgent — finalize SQL for critic-overridden / passthrough cols ──
     if use_agent:
@@ -208,6 +227,8 @@ def run_mapping(
             canonical_by_name=canonical_by_name,
         )
         traces.extend(sql_traces)
+        if on_stage:
+            on_stage("sql_agent", {})
     # ── Suppress targets the catalog declares as unmapped (false-positive guard) ──
     missing_field_names = _load_missing_field_names(source_name)
     if missing_field_names:
@@ -237,6 +258,8 @@ def run_mapping(
     # MAP-5: infer row identity + dedup strategy from the profile
     from .row_shape_agent import infer_row_shape
     row_shape_proposal = infer_row_shape(table, source_name=source_name, run_id=run_id)
+    if on_stage:
+        on_stage("row_shape", {})
 
     proposal = MappingProposal(
         source_name=source_name,
@@ -282,6 +305,8 @@ def run_mapping(
         from .evaluator_agent import run_evaluator
         eval_score = run_evaluator(proposal, run_id=run_id)
     duration = time.perf_counter() - t0
+    if on_stage:
+        on_stage("done", {"run_id": run_id})
 
     return AgentMappingRun(
         run_id=run_id,

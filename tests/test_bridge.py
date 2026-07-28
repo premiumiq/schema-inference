@@ -133,6 +133,58 @@ def test_tracker_check_first_then_no_change(tmp_path, monkeypatch):
     assert second["result"]["version"]["version"] == 1
 
 
+def test_map_run_agent_streams_map_progress_notifications(tmp_path, monkeypatch):
+    """Stubs orchestrator.run_mapping to avoid a real (slow, API-key-needing)
+    agent run -- this test is only about the notification plumbing between
+    on_stage and dispatch()'s notify param, not the agent pipeline itself."""
+    from datetime import datetime
+
+    from schema_inference.models import AgentMappingRun, MappingProposal
+
+    def fake_run_mapping(table, source_name, **kwargs):
+        on_stage = kwargs.get("on_stage")
+        if on_stage:
+            on_stage("rule_pass", {"columns": 5})
+            on_stage("done", {"run_id": "fake-run"})
+        return AgentMappingRun(
+            run_id="fake-run", source_name=source_name, table_name=table.name,
+            proposal=MappingProposal(
+                source_name=source_name, table_name=table.name, mappings=[],
+                unmapped_columns=[], missing_standard_fields=[], contested_mappings=[],
+                excluded_metadata_columns=[], row_shape=None, run_id="fake-run",
+            ),
+            traces=[], rule_pass_count=5, agent_pass_count=0, critic_overrides=0,
+            eval_score=None, started_at=datetime.now(), duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr("schema_inference.agents.orchestrator.run_mapping", fake_run_mapping)
+
+    profile_path = tmp_path / "profile.json"
+    call("profile.run", file_path=str(FIXTURE), source_name="pasl", output=str(profile_path))
+
+    notifications = []
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "map.run",
+        "params": {"profile_path": str(profile_path), "table_name": "pasl_policy", "agent": True},
+    }
+    response = bridge.dispatch(request, notify=lambda method, params: notifications.append((method, params)))
+
+    assert response["result"]["run_id"] == "fake-run"
+    assert notifications == [
+        ("map.progress", {"stage": "rule_pass", "columns": 5}),
+        ("map.progress", {"stage": "done", "run_id": "fake-run"}),
+    ]
+
+
+def test_dispatch_without_notify_defaults_to_no_op_and_does_not_leak_sink():
+    """A plain dispatch() call (no notify) must not carry over a notify
+    sink from a previous call -- _notify_sink is reset in dispatch()'s
+    finally block regardless of how the previous call was made."""
+    response = bridge.dispatch({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}})
+    assert response["result"]["pong"] is True
+    assert bridge._notify_sink is bridge._noop_notify
+
+
 def test_sql_generate_staging_model_never_overwrites_without_force(tmp_path):
     profile_path = tmp_path / "profile.json"
     call("profile.run", file_path=str(FIXTURE), source_name="pasl", output=str(profile_path))
