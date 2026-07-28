@@ -11,6 +11,13 @@ interface LossRun {
   config_snapshot: Record<string, unknown>;
 }
 
+class TableGroupNode {
+  readonly kind = 'table' as const;
+  constructor(
+    readonly tableName: string,
+    readonly runs: LossRun[],
+  ) {}
+}
 class LossRunNode {
   readonly kind = 'run' as const;
   constructor(readonly run: LossRun) {}
@@ -27,7 +34,7 @@ class MessageNode {
   constructor(readonly text: string) {}
 }
 
-type Node = LossRunNode | MetricNode | MessageNode;
+type Node = TableGroupNode | LossRunNode | MetricNode | MessageNode;
 
 function formatValue(v: unknown): string {
   if (typeof v === 'number') return Number.isInteger(v) ? String(v) : v.toFixed(4);
@@ -44,6 +51,11 @@ function formatValue(v: unknown): string {
  * Native TreeView, not a webview -- per design doc sec 7 open question 1:
  * this is tiles/numbers with no interaction beyond refresh, so it doesn't
  * need a webview's custom layout control.
+ *
+ * Root nodes are grouped by table_name, not a flat run list -- design doc
+ * sec 4: a source with multiple tables (e.g. pasm's pasm_policy and
+ * pasm_coverage) maps to different canonical schemas with independently
+ * tracked F1, so they need separate groups, not one merged list.
  */
 export class HealthTreeDataProvider implements vscode.TreeDataProvider<Node> {
   private readonly emitter = new vscode.EventEmitter<Node | undefined | void>();
@@ -59,6 +71,12 @@ export class HealthTreeDataProvider implements vscode.TreeDataProvider<Node> {
   }
 
   getTreeItem(node: Node): vscode.TreeItem {
+    if (node.kind === 'table') {
+      const item = new vscode.TreeItem(node.tableName, vscode.TreeItemCollapsibleState.Collapsed);
+      item.description = `${node.runs.length} run${node.runs.length === 1 ? '' : 's'}`;
+      item.iconPath = new vscode.ThemeIcon('table');
+      return item;
+    }
     if (node.kind === 'run') {
       const item = new vscode.TreeItem(
         `${node.run.table_name} -- ${node.run.recorded_at}`,
@@ -82,6 +100,9 @@ export class HealthTreeDataProvider implements vscode.TreeDataProvider<Node> {
   }
 
   async getChildren(node?: Node): Promise<Node[]> {
+    if (node?.kind === 'table') {
+      return node.runs.map((r) => new LossRunNode(r));
+    }
     if (node?.kind === 'run') {
       return Object.entries(node.run.metrics).map(([k, v]) => new MetricNode(k, v));
     }
@@ -99,7 +120,14 @@ export class HealthTreeDataProvider implements vscode.TreeDataProvider<Node> {
       );
       if (!resp.metamodel_available) return [new MessageNode('Metamodel store unavailable (no metamodel.db yet).')];
       if (resp.loss_runs.length === 0) return [new MessageNode(`No scoring runs recorded yet for "${sourceName}".`)];
-      return resp.loss_runs.map((r) => new LossRunNode(r));
+
+      const runsByTable = new Map<string, LossRun[]>();
+      for (const run of resp.loss_runs) {
+        const bucket = runsByTable.get(run.table_name);
+        if (bucket) bucket.push(run);
+        else runsByTable.set(run.table_name, [run]);
+      }
+      return [...runsByTable.entries()].map(([tableName, runs]) => new TableGroupNode(tableName, runs));
     } catch (err) {
       return [new MessageNode(`Error: ${(err as Error).message}`)];
     }
