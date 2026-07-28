@@ -3,11 +3,14 @@ import * as vscode from 'vscode';
 
 import { BridgeClient, BridgeError } from './bridgeClient';
 import { HealthTreeDataProvider } from './healthSidebar';
+import { PromptDiffProvider } from './promptDiffProvider';
 import { ReviewPanel } from './reviewPanel';
+import { TuningPanel } from './tuningPanel';
 import { MapRunResult, MappingProposal, ProfileRunResult, SchemaChangeReport, TrackerCheckResult } from './types';
 
 let bridge: BridgeClient | undefined;
 let healthProvider: HealthTreeDataProvider | undefined;
+let promptDiffProvider: PromptDiffProvider | undefined;
 
 /** Last source_name used by profile.run this session -- the health sidebar
  * has no other way to know which source to query, since sourceName is
@@ -116,6 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
     () => bridge,
     () => lastSourceName,
   );
+  promptDiffProvider = new PromptDiffProvider();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('schemaInference.profileAndMap', profileAndMapCurrentFile),
@@ -126,8 +130,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('schemaInference.openReviewPanel', openReviewPanelForCurrentFile),
     vscode.commands.registerCommand('schemaInference.refreshHealthSidebar', () => healthProvider?.refresh()),
+    vscode.commands.registerCommand('schemaInference.openTuningPanel', openTuningPanel),
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
     vscode.window.createTreeView('schemaInferenceHealth', { treeDataProvider: healthProvider }),
+    vscode.workspace.registerTextDocumentContentProvider(PromptDiffProvider.scheme, promptDiffProvider),
   );
 
   // Stale-proposal detection (design doc sec 5): cheap trigger (file
@@ -328,6 +334,18 @@ async function openReviewPanelForCurrentFile(): Promise<void> {
     const message = err instanceof BridgeError ? err.message : String(err);
     vscode.window.showErrorMessage(`Schema Inference: ${message}`);
   }
+}
+
+function openTuningPanel(): void {
+  let client: BridgeClient;
+  try {
+    client = getBridge();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Schema Inference: ${(err as Error).message}`);
+    return;
+  }
+  if (!promptDiffProvider) return; // set in activate(), always present by the time a command can fire
+  TuningPanel.createOrShow(client, promptDiffProvider, lastSourceName || 'pasl');
 }
 
 function provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Hover> {

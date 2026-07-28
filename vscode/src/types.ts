@@ -109,3 +109,97 @@ export interface ReviewStartResult {
   row_shape: RowShapeProposal | null;
   status: ReviewStatus;
 }
+
+// ─── Self-tuning (Layer 0/1/2) ─────────────────────────────────────────────
+
+export interface RuleWeights {
+  name_sim: number;
+  type_compat: number;
+  pattern_bonus: number;
+}
+
+export interface RuleMetrics {
+  mean_loss: number;
+  f1: number;
+  hard_f1: number;
+}
+
+export interface Layer0StatusResult {
+  active_weights: RuleWeights;
+  recent_runs: Array<{ run_id: string; table_name: string; recorded_at: string; config_snapshot: Record<string, unknown> }>;
+  metamodel_available: boolean;
+}
+
+export interface RunLayer0Result {
+  source_name: string;
+  table_name: string;
+  baseline_weights: RuleWeights;
+  baseline_metrics: RuleMetrics;
+  best_weights: RuleWeights;
+  best_metrics: RuleMetrics;
+  applied: boolean;
+  top_candidates: Array<{ weights: RuleWeights } & RuleMetrics>;
+}
+
+export interface FewShotExample {
+  example_id: string;
+  source_name: string;
+  source_column: string;
+  target_field: string | null;
+  sql_expression: string;
+  reasoning: string;
+  origin: string;
+  status: string;
+  added_at: string;
+}
+
+export interface FewShotStatsResult {
+  active: FewShotExample[];
+  active_count: number;
+  retired_count: number;
+  by_origin: Record<string, number>;
+  metamodel_available: boolean;
+}
+
+export interface RunLayer1CurationResult {
+  hard_tp_inserted: number;
+  critic_inserted: number;
+  skipped_existing: number;
+  skipped_no_signature: number;
+}
+
+export interface PromptVersion {
+  version_id: string;
+  agent_name: string;
+  prompt_text: string;
+  parent_version_id: string | null;
+  loss_before: number | null;
+  loss_after: number | null;
+  diagnosis: string | null;
+  accepted: number;
+  created_at: string;
+  accepted_at: string | null;
+}
+
+export interface PromptVersionsResult {
+  versions: PromptVersion[];
+  active_prompt: string | null;
+  metamodel_available: boolean;
+}
+
+export interface Layer2Round {
+  round: number;
+  version_id: string | null;
+  loss_before: number;
+  loss_after: number;
+  improved: boolean;
+  regressed: string[];
+}
+
+export interface Layer2SessionResult {
+  baseline_loss: number;
+  best_loss: number;
+  best_version_id: string | null;
+  rounds: Layer2Round[];
+  determinism: { losses: number[]; mean: number; stdev: number } | null;
+}

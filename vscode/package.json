@@ -46,6 +46,10 @@
         "command": "schemaInference.refreshHealthSidebar",
         "title": "Schema Inference: Refresh Mapping Health",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "schemaInference.openTuningPanel",
+        "title": "Schema Inference: Open Self-Tuning Panel"
       }
     ],
     "views": {
