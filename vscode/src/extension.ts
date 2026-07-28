@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { BridgeClient, BridgeError } from './bridgeClient';
 import { HealthTreeDataProvider } from './healthSidebar';
 import { ReviewPanel } from './reviewPanel';
-import { MapRunResult, MappingProposal, ProfileRunResult } from './types';
+import { MapRunResult, MappingProposal, ProfileRunResult, SchemaChangeReport, TrackerCheckResult } from './types';
 
 let bridge: BridgeClient | undefined;
 let healthProvider: HealthTreeDataProvider | undefined;
@@ -22,7 +22,32 @@ let lastSourceName: string | undefined;
  * cache just avoids re-reading it on every hover / avoids re-running
  * profile+map to open the review panel for a file already done this session.
  */
-const proposalsByFile = new Map<string, { proposal: MappingProposal; delimiter: string; proposalPath: string }>();
+interface CachedProposal {
+  proposal: MappingProposal;
+  delimiter: string;
+  proposalPath: string;
+  sourceName: string;
+  stale: boolean;
+  staleSummary?: string;
+}
+
+const proposalsByFile = new Map<string, CachedProposal>();
+
+function summarizeChangeReport(report: SchemaChangeReport): string {
+  const parts = report.changes.map((c) => {
+    switch (c.change_type) {
+      case 'added':
+        return `${c.column_name} added`;
+      case 'removed':
+        return `${c.column_name} removed`;
+      case 'renamed':
+        return `${c.old_value} -> ${c.new_value} renamed`;
+      case 'type_changed':
+        return `${c.column_name} type ${c.old_value} -> ${c.new_value}`;
+    }
+  });
+  return parts.join(', ') || 'schema changed';
+}
 
 function resolvePythonPath(): string {
   const configured = vscode.workspace.getConfiguration('schemaInference').get<string>('pythonPath');
@@ -104,6 +129,36 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
     vscode.window.createTreeView('schemaInferenceHealth', { treeDataProvider: healthProvider }),
   );
+
+  // Stale-proposal detection (design doc sec 5): cheap trigger (file
+  // touched on disk), real diff via the existing tracker.check bridge
+  // method -- not a second staleness check, reuses tracker.py's fingerprint
+  // machinery. Only fires for files this session has actually profiled.
+  const watcher = vscode.workspace.createFileSystemWatcher('**/*.{dat,csv}');
+  const onFileTouched = (uri: vscode.Uri) => void checkForStaleness(uri);
+  watcher.onDidChange(onFileTouched);
+  watcher.onDidCreate(onFileTouched);
+  context.subscriptions.push(watcher);
+}
+
+async function checkForStaleness(uri: vscode.Uri): Promise<void> {
+  const cached = proposalsByFile.get(uri.fsPath);
+  if (!cached || !bridge) return;
+
+  try {
+    const result = await bridge.request<TrackerCheckResult>('tracker.check', {
+      file_path: uri.fsPath,
+      source_name: cached.sourceName,
+      table_name: cached.proposal.table_name,
+    });
+    if (result.report) {
+      cached.stale = true;
+      cached.staleSummary = summarizeChangeReport(result.report);
+      ReviewPanel.notifyStale(cached.proposalPath, cached.staleSummary);
+    }
+  } catch {
+    // Best-effort -- a failed staleness check must not interrupt editing.
+  }
 }
 
 export function deactivate(): void {
@@ -172,7 +227,23 @@ async function profileAndMapCurrentFile(): Promise<void> {
           proposal: mapResult.proposal,
           delimiter: profileResult.delimiter,
           proposalPath,
+          sourceName: sourceName!,
+          stale: false,
         });
+
+        // Best-effort baseline for later staleness checks (checkForStaleness
+        // above) -- tracker.check only ever gets called from the CLI's
+        // `track` command otherwise, so without this there's no prior
+        // SchemaVersion for a subsequent file edit to diff against.
+        try {
+          await client.request('tracker.check', {
+            file_path: filePath,
+            source_name: sourceName,
+            table_name: profileResult.table_name,
+          });
+        } catch {
+          // Non-fatal -- staleness detection degrades, nothing else does.
+        }
 
         const mapped = mapResult.proposal.mappings.filter((m) => m.target_field).length;
         vscode.window.showInformationMessage(
@@ -222,6 +293,15 @@ function provideHover(document: vscode.TextDocument, position: vscode.Position):
 
   const cached = proposalsByFile.get(document.uri.fsPath);
   if (!cached) return undefined;
+
+  if (cached.stale) {
+    const md = new vscode.MarkdownString();
+    md.appendMarkdown(
+      `**Profile out of date**\n\n${cached.staleSummary ?? 'File changed since last Profile & Map.'}\n\n` +
+        'Re-run "Schema Inference: Profile & Map Current File" to refresh mappings.',
+    );
+    return new vscode.Hover(md);
+  }
 
   const { delimiter, proposal } = cached;
   const headerLine = document.lineAt(0).text;

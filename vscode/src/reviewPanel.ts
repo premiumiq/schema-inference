@@ -57,7 +57,12 @@ function escapeHtml(s: string): string {
  * stale -- finalize() still runs the real logic bridge-side.
  */
 export class ReviewPanel {
-  private static current: ReviewPanel | undefined;
+  // Keyed by proposalPath, not a single instance -- reviewing table B while
+  // table A's panel is still open must start B's own session, not silently
+  // re-reveal A's stale one (the bug this map replaces: a bare `static
+  // current` field meant createOrShow() ignored any proposalPath but the
+  // first until that one panel was closed).
+  private static readonly panels = new Map<string, ReviewPanel>();
 
   private readonly panel: vscode.WebviewPanel;
   private readonly disposables: vscode.Disposable[] = [];
@@ -70,6 +75,7 @@ export class ReviewPanel {
     private readonly bridge: BridgeClient,
     private readonly sessionId: string,
     private readonly start: ReviewStartResult,
+    private readonly proposalPath: string,
   ) {
     this.panel = vscode.window.createWebviewPanel(
       'schemaInferenceReview',
@@ -93,17 +99,27 @@ export class ReviewPanel {
   }
 
   static async createOrShow(bridge: BridgeClient, proposalPath: string): Promise<void> {
-    if (ReviewPanel.current) {
-      ReviewPanel.current.panel.reveal(vscode.ViewColumn.Beside);
+    const existing = ReviewPanel.panels.get(proposalPath);
+    if (existing) {
+      existing.panel.reveal(vscode.ViewColumn.Beside);
       return;
     }
     const start = await bridge.request<ReviewStartResult>('review.start', { proposal_path: proposalPath });
-    ReviewPanel.current = new ReviewPanel(bridge, start.session_id, start);
+    ReviewPanel.panels.set(proposalPath, new ReviewPanel(bridge, start.session_id, start, proposalPath));
   }
 
   private dispose(): void {
-    ReviewPanel.current = undefined;
+    ReviewPanel.panels.delete(this.proposalPath);
     for (const d of this.disposables.splice(0)) d.dispose();
+  }
+
+  /** Called from extension.ts's file-watcher when the source file this
+   * panel's proposal was generated from changes on disk. No-op if no panel
+   * is open for that proposal (e.g. hover already shows the stale card). */
+  static notifyStale(proposalPath: string, summary: string): void {
+    const panel = ReviewPanel.panels.get(proposalPath);
+    if (!panel) return;
+    void panel.panel.webview.postMessage({ command: 'stale', summary });
   }
 
   private async handleMessage(msg: WebviewInboundMessage): Promise<void> {
@@ -378,10 +394,13 @@ export class ReviewPanel {
   input, select { font-family: inherit; }
   #banner { display: none; padding: 6px 10px; margin-bottom: 10px; border-radius: 3px; }
   #banner.error { display: block; background: #f8514926; color: #f85149; }
+  #stale-banner { display: none; padding: 6px 10px; margin-bottom: 10px; border-radius: 3px; background: #d2992226; color: #d29922; }
+  #stale-banner.visible { display: block; }
   #footer { position: sticky; bottom: 0; background: var(--vscode-editor-background); padding: 10px 0; border-top: 1px solid var(--vscode-panel-border); }
 </style>
 </head>
 <body>
+  <div id="stale-banner"></div>
   <div id="banner"></div>
   <p id="progress"></p>
   <table>
@@ -484,6 +503,11 @@ export class ReviewPanel {
       document.getElementById('generate-sql').disabled = false;
     } else if (msg.command === 'sqlGenerated') {
       document.getElementById('sql-state').textContent = 'Saved -> ' + msg.path;
+    } else if (msg.command === 'stale') {
+      const staleBanner = document.getElementById('stale-banner');
+      staleBanner.className = 'visible';
+      staleBanner.textContent = 'Source file changed since this review started (' + msg.summary + '). ' +
+        'Mappings below may be out of date -- consider closing this panel and re-running Profile & Map.';
     }
   });
 

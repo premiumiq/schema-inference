@@ -35,7 +35,18 @@ export class BridgeClient {
   ) {}
 
   start(): void {
-    this.proc = spawn(this.pythonPath, ['-m', 'schema_inference.bridge'], { cwd: this.cwd });
+    // Force UTF-8 stdio regardless of the console codepage -- on Windows,
+    // a spawned Python process otherwise inherits cp1252 and crashes the
+    // instant any pipeline code prints a non-ASCII character (tracker.py's
+    // "->" arrows, in particular -- discovered wiring up tracker.check for
+    // staleness detection). Confirmed harmless everywhere else since these
+    // are plain informational print()s to stdout, not JSON-RPC traffic;
+    // bridgeClient's onStdout already drops any line that doesn't parse as
+    // JSON, so stray print() output was never going to corrupt a response.
+    this.proc = spawn(this.pythonPath, ['-m', 'schema_inference.bridge'], {
+      cwd: this.cwd,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    });
 
     this.proc.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
     this.proc.stderr?.on('data', (chunk: Buffer) => {

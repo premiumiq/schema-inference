@@ -63,6 +63,30 @@ export interface MapRunResult {
   proposal_path?: string;
 }
 
+export interface ColumnChange {
+  change_type: 'added' | 'removed' | 'renamed' | 'type_changed';
+  column_name: string;
+  old_value: string | null;
+  new_value: string | null;
+  rename_similarity: number | null;
+  is_breaking: boolean;
+}
+
+export interface SchemaChangeReport {
+  source_name: string;
+  from_version: number;
+  to_version: number;
+  changes: ColumnChange[];
+  has_breaking_changes: boolean;
+  new_columns_for_mapping: string[];
+}
+
+export interface TrackerCheckResult {
+  version: Record<string, unknown> | null;
+  report: SchemaChangeReport | null;
+  breaking: boolean;
+}
+
 export interface ReviewStatus {
   total_columns: number;
   decided_columns: number;
