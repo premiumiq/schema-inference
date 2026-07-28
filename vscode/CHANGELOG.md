@@ -24,3 +24,7 @@ follow-up "demo-ready" pass:
   the source file changes on disk after profiling.
 - Each review-panel session is independent per source file (previously a
   hard singleton would silently reveal the wrong file's stale session).
+- Self-tuning panel: insight into and triggers for the three self-tuning
+  layers (Layer 0 rule-weight grid search, Layer 1 few-shot bank
+  curation, Layer 2 LLM prompt tuning with a diff view and a modal-
+  confirmed accept action), previously CLI-only.

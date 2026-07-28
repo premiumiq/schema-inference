@@ -396,6 +396,7 @@ export class TuningPanel {
       <label>Max rounds: <input id="layer2-rounds" value="5" size="3" /></label>
       <button id="run-layer2" ${this.layer2Running ? 'disabled' : ''}>${this.layer2Running ? 'Running...' : 'Run tuning session'}</button>
     </div>
+    <p class="hint">Each round re-runs the full agent pipeline multiple times (baseline, train-diagnose, holdout-validate, plus a determinism check on any improving candidate) through a shared 5 requests/minute throttle -- expect several minutes per round, even for a single round, not a quick check.</p>
     <p class="hint">Active prompt: ${activePrompt ? '(accepted, ' + activePrompt.length + ' chars)' : '(none accepted yet -- module default in use)'}</p>
     <div id="layer2-progress">${this.layer2Progress.map((r) =>
       `<div>Round ${r.round}: loss ${r.loss_before.toFixed(4)} -> ${r.loss_after.toFixed(4)} <span class="badge ${r.improved ? 'improved">IMPROVED' : 'rejected">rejected'}</span></div>`,

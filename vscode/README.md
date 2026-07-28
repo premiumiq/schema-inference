@@ -40,6 +40,12 @@ to the public Marketplace.
 6. The **Schema Inference: Mapping Health** view (Explorer sidebar) shows
    past scoring runs (F1, hard-F1, mean loss, or whatever else got
    recorded) grouped by table, from the metamodel store.
+7. Run **Schema Inference: Open Self-Tuning Panel** for insight into and
+   control over the pipeline's self-tuning layers: grid-search rule
+   weights (Layer 0, with a direct apply), curate the few-shot example
+   bank (Layer 1), and run/review/accept LLM prompt-tuning sessions
+   (Layer 2 — accepting a candidate changes agent behavior for every
+   future run, so it's gated behind a confirm).
 
 If the source file changes on disk after profiling, hover and the review
 panel both surface a "profile out of date" banner instead of silently
