@@ -418,6 +418,139 @@ def _m_metamodel_query_loss_runs(params: dict) -> dict:
     return {"loss_runs": runs, "metamodel_available": True}
 
 
+def _m_tuning_layer0_status(params: dict) -> dict:
+    """Layer 0 (tools/tune_rule_weights.py): current active weights + recent
+    Layer-0 tuning runs for this source. loss_runs also carries regular
+    scoring runs (scripts/score_mappings.py) under the same source_name, so
+    filter to config_snapshot.tuning_layer == 0 -- the tag _log_tuning_run
+    already stamps every Layer-0 row with."""
+    from .mapper import _rule_weights
+    from .metamodel.store import open_store
+
+    source_name = params["source_name"]
+    weights = _rule_weights(source_name)
+    active_weights = {"name_sim": weights[0], "type_compat": weights[1], "pattern_bonus": weights[2]}
+
+    store = open_store()
+    if store is None:
+        return {"active_weights": active_weights, "recent_runs": [], "metamodel_available": False}
+    try:
+        runs = store.get_loss_runs(source_name, limit=20)
+    finally:
+        store.close()
+    layer0_runs = [r for r in runs if r["config_snapshot"].get("tuning_layer") == 0]
+    return {"active_weights": active_weights, "recent_runs": layer0_runs, "metamodel_available": True}
+
+
+def _m_tuning_run_layer0(params: dict) -> dict:
+    from tools.tune_rule_weights import run_layer0_tuning
+
+    return run_layer0_tuning(
+        source_name=params.get("source_name", "pasl"),
+        data_file=params.get("data_file"),
+        step=params.get("step", 0.05),
+        apply=bool(params.get("apply")),
+    )
+
+
+def _m_tuning_few_shot_stats(params: dict) -> dict:
+    """Layer 1 (tools/curate_few_shot_bank.py) insight: active bank contents
+    plus counts by origin (hard_tp / critic_override_accepted), and how
+    many examples have been retired."""
+    from .metamodel.store import open_store
+
+    source_name = params["source_name"]
+    store = open_store()
+    if store is None:
+        return {"active": [], "active_count": 0, "retired_count": 0, "by_origin": {}, "metamodel_available": False}
+    try:
+        active = store.get_few_shot_examples(source_name, status="active")
+        retired = store.get_few_shot_examples(source_name, status="retired")
+    finally:
+        store.close()
+
+    by_origin: dict[str, int] = {}
+    for row in active:
+        by_origin[row["origin"]] = by_origin.get(row["origin"], 0) + 1
+
+    return {
+        "active": active,
+        "active_count": len(active),
+        "retired_count": len(retired),
+        "by_origin": by_origin,
+        "metamodel_available": True,
+    }
+
+
+def _m_tuning_run_layer1_curation(params: dict) -> dict:
+    from tools.curate_few_shot_bank import curate
+
+    return curate(params["source_name"])
+
+
+def _m_tuning_retire_few_shot_example(params: dict) -> dict:
+    from .metamodel.store import open_store
+
+    store = open_store()
+    if store is None:
+        raise RpcError(APP_ERROR, "metamodel store unavailable")
+    try:
+        updated = store.retire_few_shot_example(params["example_id"], params.get("reason", ""))
+    finally:
+        store.close()
+    return {"retired": updated > 0}
+
+
+def _m_tuning_prompt_versions(params: dict) -> dict:
+    """Layer 2 (tools/tune_prompts.py) candidate list, plus the currently
+    active prompt text so the extension can diff any candidate against it."""
+    from .metamodel.store import open_store
+
+    agent_name = params["agent_name"]
+    store = open_store()
+    if store is None:
+        return {"versions": [], "active_prompt": None, "metamodel_available": False}
+    try:
+        versions = store.get_prompt_versions(agent_name)
+        active_prompt = store.get_active_prompt(agent_name)
+    finally:
+        store.close()
+    return {"versions": versions, "active_prompt": active_prompt, "metamodel_available": True}
+
+
+def _m_tuning_accept_prompt_version(params: dict) -> dict:
+    """The human-merge action (design doc's "never auto-promote" invariant,
+    same as Layer 2's CLI --accept flag) -- the extension gates this behind
+    a modal confirm before ever calling it."""
+    from .metamodel.store import open_store
+
+    store = open_store()
+    if store is None:
+        raise RpcError(APP_ERROR, "metamodel store unavailable")
+    try:
+        updated = store.accept_prompt_version(params["version_id"])
+    finally:
+        store.close()
+    if not updated:
+        raise RpcError(APP_ERROR, f"no prompt_version found with id '{params['version_id']}'")
+    return {"accepted": True}
+
+
+def _m_tuning_run_layer2_session(params: dict) -> dict:
+    """Streams tuning.progress notifications (round/version_id/loss_before/
+    loss_after/improved/regressed) via the same notify plumbing map.run's
+    agent branch uses -- see run_tuning_session's on_round param."""
+    from tools.tune_prompts import run_tuning_session
+
+    return run_tuning_session(
+        agent_name=params.get("agent_name", "mapping"),
+        source_name=params.get("source_name", "pasl"),
+        data_file=params.get("data_file"),
+        max_rounds=params.get("max_rounds", 5),
+        on_round=lambda n, info: _notify_sink("tuning.progress", {"round": n, **info}),
+    )
+
+
 def _m_tracker_check(params: dict) -> dict:
     from .profiler import profile_file
     from .tracker import BreakingSchemaChangeError, record_or_compare
@@ -508,6 +641,14 @@ _METHODS: dict[str, Callable[[dict], dict]] = {
     "metamodel.query_loss_runs": _m_metamodel_query_loss_runs,
     "tracker.check": _m_tracker_check,
     "sql.generate_staging_model": _m_sql_generate_staging_model,
+    "tuning.layer0_status": _m_tuning_layer0_status,
+    "tuning.run_layer0": _m_tuning_run_layer0,
+    "tuning.few_shot_stats": _m_tuning_few_shot_stats,
+    "tuning.run_layer1_curation": _m_tuning_run_layer1_curation,
+    "tuning.retire_few_shot_example": _m_tuning_retire_few_shot_example,
+    "tuning.prompt_versions": _m_tuning_prompt_versions,
+    "tuning.accept_prompt_version": _m_tuning_accept_prompt_version,
+    "tuning.run_layer2_session": _m_tuning_run_layer2_session,
 }
 
 

@@ -295,6 +295,11 @@ def run_layer0_tuning(
     if apply:
         if best_metrics.mean_loss < baseline_metrics.mean_loss:
             _write_weights_to_config(best_weights, AGENT_CONFIG_PATH, source_name)
+            # _rule_weights is @lru_cache'd — harmless for the CLI (a fresh
+            # process every run) but a long-lived caller in the same process
+            # (the VS Code bridge) would otherwise keep serving pre-apply
+            # weights for the rest of the session.
+            _rule_weights.cache_clear()
             print(f"\nApplied — wrote weights to {AGENT_CONFIG_PATH}")
             applied = True
         else:

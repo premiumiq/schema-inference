@@ -119,6 +119,143 @@ def test_metamodel_query_loss_runs_never_raises():
     assert isinstance(resp["result"]["metamodel_available"], bool)
 
 
+def test_tuning_layer0_status_shape():
+    resp = call("tuning.layer0_status", source_name="pasl")
+    assert set(resp["result"]["active_weights"]) == {"name_sim", "type_compat", "pattern_bonus"}
+    assert isinstance(resp["result"]["recent_runs"], list)
+    assert isinstance(resp["result"]["metamodel_available"], bool)
+
+
+def test_tuning_run_layer0_dry_run_against_small_fixture():
+    """Real call (cheap, no API cost, no config mutation since apply
+    defaults False) -- the function itself is already unit-tested in
+    test_tune_rule_weights_layer0.py; this just proves the bridge wraps it
+    with the right param names and passes the result through untouched."""
+    resp = call("tuning.run_layer0", source_name="pasl", step=0.25)
+    result = resp["result"]
+    assert result["source_name"] == "pasl"
+    assert result["applied"] is False
+    assert set(result["best_metrics"]) == {"mean_loss", "f1", "hard_f1"}
+
+
+def test_tuning_few_shot_stats_shape():
+    resp = call("tuning.few_shot_stats", source_name="pasl")
+    result = resp["result"]
+    assert isinstance(result["active"], list)
+    assert result["active_count"] == len(result["active"])
+    assert isinstance(result["by_origin"], dict)
+
+
+def test_tuning_run_layer1_curation_shape():
+    """Real call against pasl's actual mapping_history -- curate() is
+    already isolation-tested in test_curate_few_shot_bank.py, this just
+    proves the bridge wraps it correctly (right param name, dict passed
+    through as-is)."""
+    resp = call("tuning.run_layer1_curation", source_name="pasl")
+    result = resp["result"]
+    assert set(result) == {"hard_tp_inserted", "critic_inserted", "skipped_existing", "skipped_no_signature"}
+
+
+def _isolated_store(tmp_path, monkeypatch):
+    """tuning.retire_few_shot_example/prompt_versions/accept_prompt_version
+    all call open_store() fresh per handler invocation (from .metamodel.store
+    import open_store, inline in each _m_tuning_* body) -- patching the
+    source function here is picked up by every one of those inline imports.
+    Real metamodel.db is gitignored/local but still persists across test
+    runs, which made an earlier version of these tests order-dependent
+    (get_active_prompt found a PRIOR run's already-accepted row for the
+    same fake agent_name and returned it as "already active" on a fresh
+    run) -- isolation, not "harmless clutter," is the correct fix."""
+    from schema_inference.metamodel.store import MetamodelStore
+
+    db_path = tmp_path / "metamodel.db"
+    monkeypatch.setattr("schema_inference.metamodel.store.open_store", lambda: MetamodelStore(db_path))
+    return db_path
+
+
+def test_tuning_retire_few_shot_example_round_trip(tmp_path, monkeypatch):
+    from schema_inference.metamodel.store import MetamodelStore
+
+    db_path = _isolated_store(tmp_path, monkeypatch)
+    store = MetamodelStore(db_path)
+    try:
+        example_id = store.add_few_shot_example(
+            source_name="bridge_smoke_test", source_column="FAKE_COL", target_field="policy_id",
+            sql_expression="FAKE_COL", reasoning="bridge test fixture", profile_signature={},
+            origin="hard_tp",
+        )
+    finally:
+        store.close()
+
+    resp = call("tuning.retire_few_shot_example", example_id=example_id, reason="bridge test cleanup")
+    assert resp["result"]["retired"] is True
+
+    second = call("tuning.retire_few_shot_example", example_id=example_id, reason="already retired")
+    assert second["result"]["retired"] is False  # not active anymore, 0 rows updated
+
+
+def test_tuning_prompt_versions_and_accept_round_trip(tmp_path, monkeypatch):
+    from schema_inference.metamodel.store import MetamodelStore
+
+    db_path = _isolated_store(tmp_path, monkeypatch)
+    store = MetamodelStore(db_path)
+    try:
+        version_id = store.record_prompt_version(
+            agent_name="bridge_smoke_test_agent", prompt_text="candidate prompt text",
+            loss_before=0.5, loss_after=0.3,
+        )
+    finally:
+        store.close()
+
+    listed = call("tuning.prompt_versions", agent_name="bridge_smoke_test_agent")
+    assert any(v["version_id"] == version_id for v in listed["result"]["versions"])
+    assert listed["result"]["active_prompt"] is None  # nothing accepted yet
+
+    accepted = call("tuning.accept_prompt_version", version_id=version_id)
+    assert accepted["result"]["accepted"] is True
+
+    after = call("tuning.prompt_versions", agent_name="bridge_smoke_test_agent")
+    assert after["result"]["active_prompt"] == "candidate prompt text"
+
+
+def test_tuning_accept_prompt_version_unknown_id_errors(tmp_path, monkeypatch):
+    _isolated_store(tmp_path, monkeypatch)
+    resp = call("tuning.accept_prompt_version", version_id="no-such-version-id")
+    assert resp["error"]["code"] == bridge.APP_ERROR
+
+
+def test_tuning_run_layer2_session_streams_tuning_progress_notifications(monkeypatch):
+    """Stubs tune_prompts.run_tuning_session (a real session runs the live
+    agent pipeline via run_mapping(use_agent=True) for every _run_and_score
+    call, not just the diagnosis/proposal LLM steps) -- this test is only
+    about the on_round -> tuning.progress notification plumbing, mirroring
+    test_map_run_agent_streams_map_progress_notifications."""
+    def fake_run_tuning_session(agent_name, source_name, **kwargs):
+        on_round = kwargs.get("on_round")
+        round_info = {
+            "round": 1, "version_id": "fake-version", "loss_before": 0.5,
+            "loss_after": 0.3, "improved": True, "regressed": [],
+        }
+        if on_round:
+            on_round(1, round_info)
+        return {"baseline_loss": 0.5, "best_loss": 0.3, "best_version_id": "fake-version",
+                "rounds": [round_info], "determinism": None}
+
+    monkeypatch.setattr("tools.tune_prompts.run_tuning_session", fake_run_tuning_session)
+
+    notifications = []
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "tuning.run_layer2_session",
+        "params": {"agent_name": "mapping", "source_name": "pasl"},
+    }
+    response = bridge.dispatch(request, notify=lambda method, params: notifications.append((method, params)))
+
+    assert response["result"]["best_version_id"] == "fake-version"
+    assert notifications == [("tuning.progress", {"round": 1, "version_id": "fake-version",
+                                                    "loss_before": 0.5, "loss_after": 0.3,
+                                                    "improved": True, "regressed": []})]
+
+
 def test_tracker_check_first_then_no_change(tmp_path, monkeypatch):
     monkeypatch.setattr("schema_inference.tracker.REGISTRY_DIR", tmp_path / "registry")
 
