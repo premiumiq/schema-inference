@@ -41,6 +41,20 @@ def _hardcoded_expr(value: str | None, target_type: str) -> str:
     return value
 
 
+def find_unmapped_fields(definition: MappingDefinition) -> list[str]:
+    """Canonical fields with no approved mapping *and* no
+    missing_field_resolutions entry -- the genuine "we don't know" case,
+    not a field the reviewer deliberately marked NULL/hardcoded/derived.
+    Used to flag diagnostics on the generated staging model (MAP-7 step
+    "demo-ready" plan phase 4) without re-deriving the schema lookup
+    generate_staging_model_sql already does."""
+    schema_key = canonical_registry.schema_for_table(definition.table_name)
+    fields = canonical_registry.get_fields(schema_key)
+    approved_targets = {a.target_field for a in definition.approved_mappings if a.target_field}
+    resolved_targets = {r.target_field for r in definition.missing_field_resolutions}
+    return [f.name for f in fields if f.name not in approved_targets and f.name not in resolved_targets]
+
+
 def generate_staging_model_sql(definition: MappingDefinition) -> str:
     schema_key = canonical_registry.schema_for_table(definition.table_name)
     fields = canonical_registry.get_fields(schema_key)

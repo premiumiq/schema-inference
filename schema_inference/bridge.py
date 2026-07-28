@@ -454,7 +454,7 @@ def _m_sql_generate_staging_model(params: dict) -> dict:
     confirm-before-overwrite prompt (same destructive-action caution as
     the CLI's --force-accept-breaking flag on `track`)."""
     from .models import MappingDefinition
-    from .sql_scaffold import generate_staging_model_sql
+    from .sql_scaffold import find_unmapped_fields, generate_staging_model_sql
 
     definition_path = Path(params["definition_path"])
     if not definition_path.exists():
@@ -463,13 +463,33 @@ def _m_sql_generate_staging_model(params: dict) -> dict:
     definition = MappingDefinition.model_validate_json(definition_path.read_text(encoding="utf-8"))
     sql = generate_staging_model_sql(definition)
 
+    # MAP-7 demo-ready plan phase 4: line numbers for the extension to set
+    # VS Code diagnostics on, one per genuinely unmapped canonical field.
+    # A simple text search rather than manual offset bookkeeping through
+    # the header/CTE template -- canonical field names are unique per
+    # schema, so "NULL as {name}" only ever matches that field's own line.
+    lines = sql.splitlines()
+    unmapped_fields = []
+    for name in find_unmapped_fields(definition):
+        needle = f"NULL as {name}"
+        for i, line in enumerate(lines):
+            if needle in line:
+                unmapped_fields.append({"field_name": name, "line": i})
+                break
+
     output_path = Path(params["output_path"])
     if output_path.exists() and not params.get("force"):
-        return {"written": False, "exists": True, "path": str(output_path), "preview": sql}
+        return {
+            "written": False, "exists": True, "path": str(output_path),
+            "preview": sql, "unmapped_fields": unmapped_fields,
+        }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(sql, encoding="utf-8")
-    return {"written": True, "exists": False, "path": str(output_path), "preview": sql}
+    return {
+        "written": True, "exists": False, "path": str(output_path),
+        "preview": sql, "unmapped_fields": unmapped_fields,
+    }
 
 
 _METHODS: dict[str, Callable[[dict], dict]] = {

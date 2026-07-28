@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { BridgeClient, BridgeError } from './bridgeClient';
+import { setUnmappedFieldDiagnostics } from './diagnostics';
 import { ColumnMapping, ReviewStartResult } from './types';
 
 // Same thresholds as reviewer.py's _fmt_confidence / review_proposal() tier
@@ -238,11 +239,19 @@ export class ReviewPanel {
     });
     if (!target) return;
 
+    type GenerateResult = {
+      written: boolean;
+      exists: boolean;
+      path: string;
+      preview: string;
+      unmapped_fields: Array<{ field_name: string; line: number }>;
+    };
+
     try {
-      let resp = await this.bridge.request<{ written: boolean; exists: boolean; path: string; preview: string }>(
-        'sql.generate_staging_model',
-        { definition_path: this.definitionPath, output_path: target.fsPath },
-      );
+      let resp = await this.bridge.request<GenerateResult>('sql.generate_staging_model', {
+        definition_path: this.definitionPath,
+        output_path: target.fsPath,
+      });
 
       if (!resp.written && resp.exists) {
         const choice = await vscode.window.showWarningMessage(
@@ -251,7 +260,7 @@ export class ReviewPanel {
           'Overwrite',
         );
         if (choice !== 'Overwrite') return;
-        resp = await this.bridge.request('sql.generate_staging_model', {
+        resp = await this.bridge.request<GenerateResult>('sql.generate_staging_model', {
           definition_path: this.definitionPath,
           output_path: target.fsPath,
           force: true,
@@ -261,6 +270,7 @@ export class ReviewPanel {
       void this.panel.webview.postMessage({ command: 'sqlGenerated', path: resp.path });
       const doc = await vscode.workspace.openTextDocument(target);
       await vscode.window.showTextDocument(doc, vscode.ViewColumn.Active);
+      setUnmappedFieldDiagnostics(target, resp.unmapped_fields);
       vscode.window.showInformationMessage(`Schema Inference: staging model written -> ${resp.path}`);
     } catch (err) {
       const message = err instanceof BridgeError ? err.message : String(err);

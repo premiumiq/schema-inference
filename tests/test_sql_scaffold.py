@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from schema_inference.models import ApprovedMapping, MappingDefinition, MissingFieldResolution
-from schema_inference.sql_scaffold import generate_staging_model_sql
+from schema_inference.sql_scaffold import find_unmapped_fields, generate_staging_model_sql
 
 
 def am(source_column, target_field, sql=None, action="accepted"):
@@ -92,3 +92,41 @@ def test_hardcoded_value_with_quote_is_escaped():
     )
     sql = generate_staging_model_sql(definition)
     assert "'O''Fallon' as region_code" in sql
+
+
+def test_find_unmapped_fields_excludes_approved_and_resolved():
+    definition = MappingDefinition(
+        source_name="pasl", table_name="pasl_policy",
+        approved_mappings=[am("POL_NO", "policy_id")],
+        extended_attributes=[],
+        missing_field_resolutions=[
+            MissingFieldResolution(target_field="region_code", resolution="NULL"),
+        ],
+        reviewer_identity="r", reviewed_at=datetime(2026, 1, 1), profile_hash="",
+    )
+    unmapped = find_unmapped_fields(definition)
+    assert "policy_id" not in unmapped
+    assert "region_code" not in unmapped
+    assert "premium_amount" in unmapped  # required, no mapping, no resolution
+
+
+def test_find_unmapped_fields_empty_when_all_required_fields_covered():
+    definition = MappingDefinition(
+        source_name="pasl", table_name="pasl_policy",
+        approved_mappings=[am("X", "policy_id")],
+        extended_attributes=[],
+        missing_field_resolutions=[
+            MissingFieldResolution(target_field=f, resolution="NULL")
+            for f in [
+                "policy_number", "customer_id", "agent_id", "channel_code", "product_code",
+                "policy_type", "start_date", "end_date", "premium_amount", "policy_status",
+            ]
+        ],
+        reviewer_identity="r", reviewed_at=datetime(2026, 1, 1), profile_hash="",
+    )
+    # Every *required* field in canonical/policy.py is covered; only
+    # optional fields (region_code, coverage_limit, etc.) remain unmapped.
+    unmapped = find_unmapped_fields(definition)
+    assert "policy_id" not in unmapped
+    assert "premium_amount" not in unmapped
+    assert "region_code" in unmapped  # optional, genuinely still unmapped

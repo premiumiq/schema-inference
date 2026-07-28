@@ -221,6 +221,13 @@ def test_sql_generate_staging_model_never_overwrites_without_force(tmp_path):
     written_contents = output_path.read_text(encoding="utf-8")
     assert "with source as" in written_contents
 
+    # unmapped_fields' line numbers must point at the field's own "NULL
+    # as {field}" line in the file actually written (MAP-7 demo-ready
+    # plan phase 4 -- diagnostics squiggles read this).
+    written_lines = written_contents.splitlines()
+    for entry in first["result"]["unmapped_fields"]:
+        assert f"NULL as {entry['field_name']}" in written_lines[entry["line"]]
+
     # Second call without force must not clobber the file -- returns a
     # preview instead, mirroring the "never overwrite silently" rule.
     output_path.write_text("-- hand-edited by a human, do not clobber --", encoding="utf-8")
