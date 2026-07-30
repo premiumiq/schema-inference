@@ -54,6 +54,10 @@
       {
         "command": "schemaInference.profileSnowflakeTable",
         "title": "Schema Inference: Profile Snowflake Table"
+      },
+      {
+        "command": "schemaInference.extractTargetSchema",
+        "title": "Schema Inference: Extract Target Schema from Snowflake Table"
       }
     ],
     "views": {

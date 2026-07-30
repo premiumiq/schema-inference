@@ -203,3 +203,25 @@ export interface Layer2SessionResult {
   rounds: Layer2Round[];
   determinism: { losses: number[]; mean: number; stdev: number } | null;
 }
+
+// ─── Snowflake as a mapping target ──────────────────────────────────────────
+
+export interface DraftCanonicalField {
+  name: string;
+  target_type: string;
+  required: boolean;
+  description: string;
+  aliases: string[];
+  secondary_target: string | null;
+}
+
+export interface ExtractSnowflakeSchemaResult {
+  schema_key: string;
+  fields: DraftCanonicalField[];
+}
+
+export interface RegisterDynamicSchemaResult {
+  registered: boolean;
+  schema_key: string;
+  table_names: string[];
+}

@@ -6,7 +6,15 @@ import { HealthTreeDataProvider } from './healthSidebar';
 import { PromptDiffProvider } from './promptDiffProvider';
 import { ReviewPanel } from './reviewPanel';
 import { TuningPanel } from './tuningPanel';
-import { MapRunResult, MappingProposal, ProfileRunResult, SchemaChangeReport, TrackerCheckResult } from './types';
+import {
+  ExtractSnowflakeSchemaResult,
+  MapRunResult,
+  MappingProposal,
+  ProfileRunResult,
+  RegisterDynamicSchemaResult,
+  SchemaChangeReport,
+  TrackerCheckResult,
+} from './types';
 
 let bridge: BridgeClient | undefined;
 let healthProvider: HealthTreeDataProvider | undefined;
@@ -17,6 +25,11 @@ let promptDiffProvider: PromptDiffProvider | undefined;
  * either read from settings or typed into a one-off input box (never
  * persisted anywhere the sidebar could read it back from). */
 let lastSourceName: string | undefined;
+
+/** Last profiled table_name -- prefills "Extract Target Schema"'s
+ * table_name(s) prompt, since that's almost always the table you just
+ * profiled and are about to (re-)map against the extracted schema. */
+let lastTableName: string | undefined;
 
 /**
  * One MappingProposal per profiled file, keyed by absolute fsPath. In-memory
@@ -132,6 +145,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('schemaInference.refreshHealthSidebar', () => healthProvider?.refresh()),
     vscode.commands.registerCommand('schemaInference.openTuningPanel', openTuningPanel),
     vscode.commands.registerCommand('schemaInference.profileSnowflakeTable', profileSnowflakeTable),
+    vscode.commands.registerCommand('schemaInference.extractTargetSchema', extractTargetSchema),
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
     vscode.window.createTreeView('schemaInferenceHealth', { treeDataProvider: healthProvider }),
     vscode.workspace.registerTextDocumentContentProvider(PromptDiffProvider.scheme, promptDiffProvider),
@@ -237,6 +251,7 @@ async function profileAndMapCurrentFile(): Promise<void> {
           file_path: filePath,
           source_name: sourceName,
         });
+        lastTableName = profileResult.table_name;
 
         // Written next to the profile under the same registry/{source}/
         // convention (profile_{table}.json already exists there) so
@@ -381,6 +396,7 @@ async function profileSnowflakeTable(): Promise<void> {
         const profileResult = await client.request<ProfileRunResult>('profile.run_snowflake', {
           database, schema, table, source_name: sourceName,
         });
+        lastTableName = profileResult.table_name;
 
         // Same registry/{source}/proposal_{table}.json convention as the
         // file-based flow, so review.start has a stable path to reload.
@@ -433,6 +449,99 @@ async function profileSnowflakeTable(): Promise<void> {
       }
     },
   );
+}
+
+/**
+ * MAP-7 Phase B: Snowflake table as a live mapping target. Extraction and
+ * registration are deliberately two round trips -- canonical.extract_
+ * snowflake_schema only introspects and returns a candidate field list
+ * (registers nothing), so the user sees it in an editable JSON tab before
+ * canonical.register_dynamic_schema makes it live for any table_name.
+ * "Live" per the user's explicit choice: no draft .py file to commit,
+ * just an in-memory registration for this bridge session -- but that
+ * doesn't mean zero visibility before it takes effect, hence the tab.
+ */
+async function extractTargetSchema(): Promise<void> {
+  const fqtn = await vscode.window.showInputBox({
+    prompt: 'Target Snowflake table (DATABASE.SCHEMA.TABLE)',
+    placeHolder: 'DEV_SANDBOX_DB.SILVER.SLV_POLICY',
+  });
+  if (!fqtn) return;
+  const parsed = parseFullyQualifiedTableName(fqtn);
+  if (!parsed) return;
+  const { database, schema, table } = parsed;
+
+  let client: BridgeClient;
+  try {
+    client = getBridge();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Schema Inference: ${(err as Error).message}`);
+    return;
+  }
+
+  let extracted: ExtractSnowflakeSchemaResult;
+  try {
+    extracted = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Schema Inference: extracting schema from ${database}.${schema}.${table}...`,
+      },
+      () => client.request<ExtractSnowflakeSchemaResult>('canonical.extract_snowflake_schema', {
+        database, schema, table,
+      }),
+    );
+  } catch (err) {
+    const message = err instanceof BridgeError ? err.message : String(err);
+    vscode.window.showErrorMessage(`Schema Inference: ${message}`);
+    return;
+  }
+
+  // Untitled buffer, not written to disk -- lets the user edit field
+  // names/types/required/aliases in a real editor before registering,
+  // without building a custom webview form for editing a list of records.
+  const doc = await vscode.workspace.openTextDocument({
+    content: JSON.stringify({ schema_key: extracted.schema_key, fields: extracted.fields }, null, 2),
+    language: 'json',
+  });
+  await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Active, preview: false });
+  vscode.window.showInformationMessage(
+    'Schema Inference: review/edit the extracted fields in this tab (add aliases, fix types, mark required), ' +
+      'then answer the next prompt to register it. No aliases were extracted -- the rule engine\'s ' +
+      'fuzzy-match recall depends heavily on them.',
+  );
+
+  const tableNamesInput = await vscode.window.showInputBox({
+    prompt: 'Register this as the target schema for which source table_name(s)? (comma-separated)',
+    placeHolder: lastTableName || 'pasl_policy',
+    value: lastTableName || '',
+  });
+  if (!tableNamesInput) return;
+  const tableNames = tableNamesInput.split(',').map((t) => t.trim()).filter(Boolean);
+  if (tableNames.length === 0) {
+    vscode.window.showErrorMessage('Schema Inference: no table_name(s) given -- nothing registered.');
+    return;
+  }
+
+  let edited: { schema_key: string; fields: unknown[] };
+  try {
+    edited = JSON.parse(doc.getText());
+  } catch (err) {
+    vscode.window.showErrorMessage(`Schema Inference: the JSON tab has invalid JSON -- ${(err as Error).message}`);
+    return;
+  }
+
+  try {
+    const result = await client.request<RegisterDynamicSchemaResult>('canonical.register_dynamic_schema', {
+      schema_key: edited.schema_key, fields: edited.fields, table_names: tableNames,
+    });
+    vscode.window.showInformationMessage(
+      `Schema Inference: "${result.schema_key}" is now the target schema for ${result.table_names.join(', ')} ` +
+        '(this bridge session only -- restarting the bridge loses it). Run Profile & Map on that source to use it.',
+    );
+  } catch (err) {
+    const message = err instanceof BridgeError ? err.message : String(err);
+    vscode.window.showErrorMessage(`Schema Inference: ${message}`);
+  }
 }
 
 async function openReviewPanelForCurrentFile(): Promise<void> {
