@@ -200,6 +200,34 @@ def _m_profile_run_snowflake(params: dict) -> dict:
     }
 
 
+def _m_canonical_extract_snowflake_schema(params: dict) -> dict:
+    """MAP-7: Snowflake table as a mapping target, step 1 of 2 (preview --
+    does not register anything). Introspects a target table's schema (no
+    data read) and derives a candidate CanonicalField list. schema_key
+    defaults to the table name lowercased, matching this project's other
+    schema_key naming (e.g. 'pasm_coverage')."""
+    from .snowflake_reader import describe_target_table, extract_canonical_fields
+
+    columns = describe_target_table(params["database"], params["schema"], params["table"])
+    fields = extract_canonical_fields(columns)
+    schema_key = params.get("schema_key") or params["table"].lower()
+    return {"schema_key": schema_key, "fields": fields}
+
+
+def _m_canonical_register_dynamic_schema(params: dict) -> dict:
+    """MAP-7: Snowflake table as a mapping target, step 2 of 2 -- the step
+    that actually changes mapping behavior (in-memory, this bridge process
+    only). Separated from extraction so a human sees the fields at least
+    once (the extension shows them in an editable JSON tab) before they
+    become live for any map.run call against table_names."""
+    from .canonical import registry as canonical_registry
+    from .canonical.policy import CanonicalField
+
+    fields = [CanonicalField(**f) for f in params["fields"]]
+    canonical_registry.register_dynamic_schema(params["schema_key"], fields, params["table_names"])
+    return {"registered": True, "schema_key": params["schema_key"], "table_names": params["table_names"]}
+
+
 def _m_profile_load(params: dict) -> dict:
     profile_path = Path(params["path"])
     if not profile_path.exists():
@@ -674,6 +702,8 @@ _METHODS: dict[str, Callable[[dict], dict]] = {
     "ping": _m_ping,
     "profile.run": _m_profile_run,
     "profile.run_snowflake": _m_profile_run_snowflake,
+    "canonical.extract_snowflake_schema": _m_canonical_extract_snowflake_schema,
+    "canonical.register_dynamic_schema": _m_canonical_register_dynamic_schema,
     "profile.load": _m_profile_load,
     "map.run": _m_map_run,
     "review.start": _m_review_start,

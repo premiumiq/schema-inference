@@ -168,6 +168,54 @@ def test_profile_run_snowflake_surfaces_connection_errors_as_app_error(monkeypat
     assert "Could not connect" in resp["error"]["message"]
 
 
+def test_canonical_extract_snowflake_schema_shape(monkeypatch):
+    """describe_target_table (the one function that opens a real
+    connection) is stubbed -- no reachable Snowflake instance in this
+    environment. This proves the bridge marshals params and shapes the
+    response correctly; extract_canonical_fields' own logic is unit-tested
+    in test_snowflake_reader.py."""
+    def fake_describe_target_table(database, schema, table):
+        return [
+            {"name": "POLICY_ID", "snowflake_type": "NUMBER(38,0)", "nullable": False},
+            {"name": "EFFECTIVE_DATE", "snowflake_type": "DATE", "nullable": True},
+        ]
+
+    monkeypatch.setattr("schema_inference.snowflake_reader.describe_target_table", fake_describe_target_table)
+
+    resp = call(
+        "canonical.extract_snowflake_schema",
+        database="DEV_DB", schema="SILVER", table="SLV_POLICY",
+    )
+    result = resp["result"]
+    assert result["schema_key"] == "slv_policy"  # defaulted from table name
+    assert {f["name"] for f in result["fields"]} == {"policy_id", "effective_date"}
+    assert next(f for f in result["fields"] if f["name"] == "policy_id")["required"] is True
+
+
+def test_canonical_register_dynamic_schema_makes_it_resolvable():
+    """Full extract -> register round trip (register step doesn't touch
+    Snowflake at all, so no stubbing needed here) -- confirms
+    canonical_registry.schema_for_table() reflects the newly registered
+    schema for the given table_names immediately, same in-process global
+    state map.run/sql.generate_staging_model would see on their next call."""
+    from schema_inference.canonical import registry as canonical_registry
+
+    fields = [
+        {"name": "policy_id", "target_type": "bigint", "required": True,
+         "description": "", "aliases": [], "secondary_target": None},
+    ]
+    resp = call(
+        "canonical.register_dynamic_schema",
+        schema_key="test_slv_policy_bridge", fields=fields, table_names=["test_source_table_bridge"],
+    )
+    assert resp["result"] == {
+        "registered": True, "schema_key": "test_slv_policy_bridge",
+        "table_names": ["test_source_table_bridge"],
+    }
+    assert canonical_registry.schema_for_table("test_source_table_bridge") == "test_slv_policy_bridge"
+    assert canonical_registry.get_names("test_slv_policy_bridge") == frozenset({"policy_id"})
+
+
 def test_metamodel_query_loss_runs_never_raises():
     resp = call("metamodel.query_loss_runs", source_name="pasl", limit=5)
     assert "loss_runs" in resp["result"]

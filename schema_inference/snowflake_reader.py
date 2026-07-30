@@ -7,6 +7,11 @@ resulting SchemaProfile is identical in shape to a file-based profile.
 Connection uses RSA key-pair auth, matching the project's .env convention:
   SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH,
   SNOWFLAKE_WAREHOUSE, SNOWFLAKE_ROLE
+
+Also has describe_target_table()/extract_canonical_fields() (MAP-7): given
+a target table (e.g. the warehouse's slv_policy silver table), introspect
+its schema (no data read) and derive a candidate canonical field list for
+schema_inference.canonical.registry.register_dynamic_schema().
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime
 
 from .models import SchemaProfile, TableProfile
@@ -142,3 +148,79 @@ def profile_snowflake_table(
         profiled_at=datetime.now(),
         profile_hash=profile_hash,
     )
+
+
+# ─── Target-schema extraction (MAP-7: Snowflake table as a mapping target) ───
+#
+# Separate from profile_snowflake_table() above -- that profiles a SOURCE
+# table's data (row-by-row stats). This introspects a TARGET table's
+# schema metadata only (no data read) to derive a candidate canonical
+# field list, e.g. from the warehouse's own slv_policy silver table.
+
+def describe_target_table(database: str, schema: str, table: str) -> list[dict]:
+    """DESCRIBE TABLE — schema metadata only, no data read. Returns one
+    dict per column: {name, snowflake_type, nullable}."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        fqtn = f'"{database}"."{schema}"."{table}"'
+        cur.execute(f"DESCRIBE TABLE {fqtn}")
+        rows = cur.fetchall()
+        col_index = {d[0].lower(): i for i, d in enumerate(cur.description)}
+        name_idx = col_index["name"]
+        type_idx = col_index["type"]
+        null_idx = col_index["null?"]
+        return [
+            {"name": r[name_idx], "snowflake_type": r[type_idx], "nullable": r[null_idx] == "Y"}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+_NUMBER_RE = re.compile(r"^(?:NUMBER|DECIMAL|NUMERIC)\((\d+),\s*(\d+)\)")
+
+
+def _map_snowflake_type(sf_type: str) -> str:
+    """Maps a Snowflake DESCRIBE TABLE type string to this project's
+    five-value target_type vocabulary (integer | bigint | string | decimal
+    | date | boolean). Unknown types fall back to "string" -- safe default,
+    matching the rest of this project's graceful-degradation conventions."""
+    t = sf_type.strip().upper()
+
+    m = _NUMBER_RE.match(t)
+    if m:
+        precision, scale = int(m.group(1)), int(m.group(2))
+        if scale > 0:
+            return "decimal"
+        return "bigint" if precision > 9 else "integer"
+
+    if t.startswith(("VARCHAR", "CHAR", "STRING", "TEXT")):
+        return "string"
+    if t.startswith(("DATE", "TIMESTAMP")):
+        return "date"
+    if t.startswith("BOOLEAN"):
+        return "boolean"
+    if t.startswith(("FLOAT", "DOUBLE", "REAL")):
+        return "decimal"
+    return "string"
+
+
+def extract_canonical_fields(columns: list[dict]) -> list[dict]:
+    """Converts describe_target_table()'s output into CanonicalField-shaped
+    dicts. No aliases -- there's no source to infer domain synonyms from a
+    bare column list; a human is expected to add them (this is a live,
+    in-session registration, not a draft file, but the rule engine's
+    fuzzy-match recall still depends heavily on curated aliases, and that
+    tradeoff is real, not silently patched over here)."""
+    return [
+        {
+            "name": c["name"].lower(),
+            "target_type": _map_snowflake_type(c["snowflake_type"]),
+            "required": not c["nullable"],
+            "description": "",
+            "aliases": [],
+            "secondary_target": None,
+        }
+        for c in columns
+    ]
