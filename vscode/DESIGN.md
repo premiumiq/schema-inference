@@ -73,12 +73,41 @@ else. This is real, useful information, not a problem to fix: even
 practice, more than the original estimate assumed. Worth surfacing to
 whoever clicks "Run tuning session" for the first time.
 
+**Snowflake as a source, and as a live mapping target** — done, two
+independent additions surfaced by the same manual-verification pass:
+`schema_inference/snowflake_reader.py`'s `profile_snowflake_table()` had
+zero callers anywhere in the repo (Snowflake profiling never actually
+worked, CLI or extension, despite `.env.example`/`CLAUDE.md` describing
+it) — now wired via `profile.run_snowflake` and a
+"Profile Snowflake Table" command that skips the file-hover/stale-watch
+path entirely (no file exists for a live table) and goes straight to the
+review panel. Separately, `canonical/registry.py` gained
+`register_dynamic_schema()` so a real Snowflake table's own schema (e.g.
+a warehouse silver table) can become a live mapping target for the
+current bridge session — introspected via a new
+`describe_target_table()`/`extract_canonical_fields()` pair in
+`snowflake_reader.py`, previewed in an editable JSON tab
+("Extract Target Schema from Snowflake Table"), then registered via
+`canonical.register_dynamic_schema`. Deliberately in-memory/session-only,
+not a draft `.py` file to commit — considered and explicitly declined for
+this feature, unlike the project's more common "generate a draft, human
+commits" pattern (dbt scaffolding, few-shot bank, prompt tuning). No
+aliases get extracted (nothing to infer domain synonyms from a bare
+column list), so rule-pass recall against an extracted schema is
+materially worse than the hand-curated ones until a human adds some in
+the review tab — real tradeoff, not silently patched over.
+
+Neither Snowflake path could be verified end to end from a coding session
+— no reachable Snowflake instance/credentials there. Needs a real
+click-through on a machine with real access (see
+`vscode/MANUAL_VERIFICATION.md` §10).
+
 Remaining before any of this is more than a spike: a full live Extension
 Host pass covering everything (hover, review panel, health sidebar, dbt
-scaffolding, and now the self-tuning panel including a real Layer 2
-session end to end), and the open questions in the design doc sec 7 that
-haven't come up in practice yet (packaging/distribution beyond the
-internal `.vsix`, multiple bridge processes).
+scaffolding, self-tuning panel including a real Layer 2 session end to
+end, and now both Snowflake paths), and the open questions in the design
+doc sec 7 that haven't come up in practice yet (packaging/distribution
+beyond the internal `.vsix`, multiple bridge processes).
 
 ## Planned scope
 

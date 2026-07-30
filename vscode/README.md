@@ -19,6 +19,13 @@ to the public Marketplace.
 - If your interpreter isn't on `PATH` as `python`/`python3`, set
   `schemaInference.pythonPath` (Settings → search "Schema Inference") to
   your venv's interpreter, e.g. `.venv/Scripts/python.exe` on Windows.
+- For the two Snowflake commands: `SNOWFLAKE_ACCOUNT`/`_USER`/
+  `_PRIVATE_KEY_PATH`/`_WAREHOUSE`/`_ROLE`/`_DATABASE` must be set as real
+  process environment variables in whatever process VS Code itself runs
+  in — **not** just present in a `.env` file. Nothing in this extension or
+  the Python pipeline loads `.env` (same as `ANTHROPIC_API_KEY`); the
+  bridge subprocess only inherits the environment VS Code was launched
+  with.
 
 ## Usage
 
@@ -46,6 +53,18 @@ to the public Marketplace.
    bank (Layer 1), and run/review/accept LLM prompt-tuning sessions
    (Layer 2 — accepting a candidate changes agent behavior for every
    future run, so it's gated behind a confirm).
+8. Instead of a `.dat`/`.csv` file, run **Schema Inference: Profile
+   Snowflake Table**, enter `DATABASE.SCHEMA.TABLE`, and pick a mapping
+   mode as in step 2 — there's no file to hover over or watch for a live
+   table, so this goes straight to the review panel once mapping finishes.
+9. To map against a live table's own schema instead of the built-in
+   `policy`/`pasm_coverage` targets, run **Schema Inference: Extract
+   Target Schema from Snowflake Table**, enter the *target* table (e.g. a
+   warehouse silver table), review/edit the extracted field list in the
+   JSON tab it opens (add aliases — none are extracted automatically, and
+   the rule engine's fuzzy-match recall depends heavily on them), then
+   name the source `table_name`(s) to register it against. This only
+   lasts for the current bridge session — restarting the bridge loses it.
 
 If the source file changes on disk after profiling, hover and the review
 panel both surface a "profile out of date" banner instead of silently
@@ -59,6 +78,12 @@ showing stale mappings.
   windows on the same workspace simultaneously.
 - Diagnostics only cover unmapped columns in a *generated* staging model,
   not arbitrary hand-written SQL.
+- A Snowflake-extracted target schema has no aliases (there's no source
+  to infer domain synonyms from a bare column list) and is never
+  persisted — it's registered in-memory for the current bridge process
+  only. Expect materially worse rule-pass recall against it than the
+  hand-curated `policy`/`pasm_coverage` schemas until a human adds
+  aliases in the review tab.
 
 See `docs/map-7-vscode-extension-design.md` in the repo root for the full
 design rationale and build-order history.

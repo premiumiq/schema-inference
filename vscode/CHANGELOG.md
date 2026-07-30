@@ -28,3 +28,9 @@ follow-up "demo-ready" pass:
   layers (Layer 0 rule-weight grid search, Layer 1 few-shot bank
   curation, Layer 2 LLM prompt tuning with a diff view and a modal-
   confirmed accept action), previously CLI-only.
+- Profile a Snowflake table directly as a mapping source ("Profile
+  Snowflake Table"), previously unwired anywhere in the tool despite
+  looking supported.
+- Extract a live Snowflake table's own schema as a mapping target
+  ("Extract Target Schema from Snowflake Table") — reviewed in an
+  editable JSON tab, then registered for the current bridge session only.
