@@ -50,6 +50,10 @@
       {
         "command": "schemaInference.openTuningPanel",
         "title": "Schema Inference: Open Self-Tuning Panel"
+      },
+      {
+        "command": "schemaInference.profileSnowflakeTable",
+        "title": "Schema Inference: Profile Snowflake Table"
       }
     ],
     "views": {
@@ -81,6 +85,16 @@
           "type": "string",
           "default": "",
           "description": "Logical source name passed to profile/map (e.g. pasl, pasm). Prompted if unset."
+        },
+        "schemaInference.snowflakeDatabase": {
+          "type": "string",
+          "default": "",
+          "description": "Default Snowflake database to prefill in \"Profile Snowflake Table\". Requires SNOWFLAKE_* credentials as real environment variables in the process VS Code runs in (not just present in .env -- nothing in this extension or the Python pipeline loads .env)."
+        },
+        "schemaInference.snowflakeSchema": {
+          "type": "string",
+          "default": "",
+          "description": "Default Snowflake schema to prefill in \"Profile Snowflake Table\"."
         }
       }
     }

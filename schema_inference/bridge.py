@@ -155,6 +155,51 @@ def _m_profile_run(params: dict) -> dict:
     }
 
 
+def _m_profile_run_snowflake(params: dict) -> dict:
+    """Snowflake-as-a-source: mirrors _m_profile_run above almost line for
+    line, wrapping snowflake_reader.profile_snowflake_table() instead of
+    profile_file(). That function has had zero callers anywhere in this
+    repo until now -- Snowflake profiling has never actually worked, CLI
+    or extension, despite .env.example/CLAUDE.md describing it. Credentials
+    come from this process's real environment (SNOWFLAKE_ACCOUNT/_USER/
+    _PRIVATE_KEY_PATH/_WAREHOUSE/_ROLE/_DATABASE) -- nothing in this repo
+    loads .env, so whatever already makes ANTHROPIC_API_KEY visible to this
+    process covers these too."""
+    from .snowflake_reader import profile_snowflake_table
+    from .tracker import REGISTRY_DIR
+
+    kwargs = dict(
+        database=params["database"],
+        schema=params["schema"],
+        table=params["table"],
+        source_name=params["source_name"],
+        table_name=params.get("table_name"),
+    )
+    if params.get("row_limit") is not None:
+        kwargs["row_limit"] = params["row_limit"]
+    profile = profile_snowflake_table(**kwargs)
+    table = profile.tables[0]
+
+    out_path = params.get("output")
+    if out_path:
+        out = Path(out_path)
+    else:
+        source_dir = REGISTRY_DIR / params["source_name"]
+        source_dir.mkdir(parents=True, exist_ok=True)
+        out = source_dir / f"profile_{table.name}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+
+    return {
+        "profile_path": str(out),
+        "source_name": profile.source_name,
+        "table_name": table.name,
+        "row_count": table.row_count,
+        "column_count": len(table.columns),
+        "delimiter": table.delimiter,
+    }
+
+
 def _m_profile_load(params: dict) -> dict:
     profile_path = Path(params["path"])
     if not profile_path.exists():
@@ -628,6 +673,7 @@ def _m_sql_generate_staging_model(params: dict) -> dict:
 _METHODS: dict[str, Callable[[dict], dict]] = {
     "ping": _m_ping,
     "profile.run": _m_profile_run,
+    "profile.run_snowflake": _m_profile_run_snowflake,
     "profile.load": _m_profile_load,
     "map.run": _m_map_run,
     "review.start": _m_review_start,

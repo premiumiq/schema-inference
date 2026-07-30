@@ -131,6 +131,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('schemaInference.openReviewPanel', openReviewPanelForCurrentFile),
     vscode.commands.registerCommand('schemaInference.refreshHealthSidebar', () => healthProvider?.refresh()),
     vscode.commands.registerCommand('schemaInference.openTuningPanel', openTuningPanel),
+    vscode.commands.registerCommand('schemaInference.profileSnowflakeTable', profileSnowflakeTable),
     vscode.languages.registerHoverProvider([{ pattern: '**/*.dat' }, { pattern: '**/*.csv' }], { provideHover }),
     vscode.window.createTreeView('schemaInferenceHealth', { treeDataProvider: healthProvider }),
     vscode.workspace.registerTextDocumentContentProvider(PromptDiffProvider.scheme, promptDiffProvider),
@@ -300,6 +301,132 @@ async function profileAndMapCurrentFile(): Promise<void> {
           `Schema Inference: ${mapped}/${mapResult.proposal.mappings.length} columns mapped. ` +
             'Hover the header row, or run "Schema Inference: Open Review Panel" to review.',
         );
+      } catch (err) {
+        const message = err instanceof BridgeError ? err.message : String(err);
+        vscode.window.showErrorMessage(`Schema Inference: ${message}`);
+      }
+    },
+  );
+}
+
+/** Parses "DATABASE.SCHEMA.TABLE" into its three parts, or returns
+ * undefined (and shows an error) if the shape doesn't match. Reuses the
+ * exact dotted fully-qualified-name convention snowflake_reader.py and
+ * CLAUDE.md already use elsewhere (e.g. DEV_SANDBOX_DB.PASL.PASL_POLICY). */
+function parseFullyQualifiedTableName(input: string): { database: string; schema: string; table: string } | undefined {
+  const parts = input.split('.').map((p) => p.trim());
+  if (parts.length !== 3 || parts.some((p) => !p)) {
+    vscode.window.showErrorMessage(
+      'Schema Inference: expected DATABASE.SCHEMA.TABLE (exactly 3 dot-separated parts).',
+    );
+    return undefined;
+  }
+  const [database, schema, table] = parts;
+  return { database, schema, table };
+}
+
+async function profileSnowflakeTable(): Promise<void> {
+  const config = vscode.workspace.getConfiguration('schemaInference');
+  let sourceName = config.get<string>('sourceName');
+  if (!sourceName) {
+    sourceName = await vscode.window.showInputBox({
+      prompt: 'Logical source name (e.g. pasl, pasm)',
+      placeHolder: 'pasl',
+    });
+    if (!sourceName) return;
+  }
+
+  const defaultDb = config.get<string>('snowflakeDatabase') || '';
+  const defaultSchema = config.get<string>('snowflakeSchema') || '';
+
+  const fqtn = await vscode.window.showInputBox({
+    prompt: 'Snowflake table (DATABASE.SCHEMA.TABLE)',
+    placeHolder: 'DEV_SANDBOX_DB.PASL.PASL_POLICY',
+    value: defaultDb && defaultSchema ? `${defaultDb}.${defaultSchema}.` : '',
+  });
+  if (!fqtn) return;
+  const parsed = parseFullyQualifiedTableName(fqtn);
+  if (!parsed) return;
+  const { database, schema, table } = parsed;
+
+  const pipelinePick = await vscode.window.showQuickPick(
+    [
+      { label: 'Rule-only (fast)', detail: 'No LLM calls -- name/type/pattern matching only.', useAgent: false },
+      {
+        label: 'Agent pipeline (slower, more accurate)',
+        detail: 'MappingAgent + CriticAgent + SQLAgent -- needs ANTHROPIC_API_KEY.',
+        useAgent: true,
+      },
+    ],
+    { placeHolder: 'How should columns be mapped?' },
+  );
+  if (!pipelinePick) return;
+  const useAgent = pipelinePick.useAgent;
+
+  let client: BridgeClient;
+  try {
+    client = getBridge();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Schema Inference: ${(err as Error).message}`);
+    return;
+  }
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Schema Inference: profiling Snowflake table ${database}.${schema}.${table}...`,
+    },
+    async (progress) => {
+      try {
+        const profileResult = await client.request<ProfileRunResult>('profile.run_snowflake', {
+          database, schema, table, source_name: sourceName,
+        });
+
+        // Same registry/{source}/proposal_{table}.json convention as the
+        // file-based flow, so review.start has a stable path to reload.
+        const proposalPath = path.join(
+          path.dirname(profileResult.profile_path),
+          `proposal_${profileResult.table_name}.json`,
+        );
+
+        let mapResult: MapRunResult;
+        if (useAgent) {
+          client.onNotification = (method, params) => {
+            if (method === 'map.progress') progress.report({ message: describeStage(params) });
+          };
+          try {
+            mapResult = await client.request<MapRunResult>('map.run', {
+              profile_path: profileResult.profile_path,
+              table_name: profileResult.table_name,
+              agent: true,
+              output: proposalPath,
+            });
+          } finally {
+            client.onNotification = undefined;
+          }
+        } else {
+          mapResult = await client.request<MapRunResult>('map.run', {
+            profile_path: profileResult.profile_path,
+            table_name: profileResult.table_name,
+            no_llm: true,
+            output: proposalPath,
+          });
+        }
+
+        lastSourceName = sourceName!;
+        healthProvider?.refresh();
+
+        const mapped = mapResult.proposal.mappings.filter((m) => m.target_field).length;
+        vscode.window.showInformationMessage(
+          `Schema Inference: ${mapped}/${mapResult.proposal.mappings.length} columns mapped from ` +
+            `${database}.${schema}.${table}. Opening review panel...`,
+        );
+
+        // No file to hover/watch for a Snowflake-sourced table (no
+        // proposalsByFile entry, no stale-file detection) -- go straight
+        // to the review panel, same as "Open Review Panel" already does
+        // for a cached file-based proposal.
+        await ReviewPanel.createOrShow(client, proposalPath);
       } catch (err) {
         const message = err instanceof BridgeError ? err.message : String(err);
         vscode.window.showErrorMessage(`Schema Inference: ${message}`);

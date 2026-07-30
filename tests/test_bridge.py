@@ -113,6 +113,61 @@ def test_review_finalize_rejects_pending_columns(tmp_path):
     assert "pending" in resp["error"]["message"]
 
 
+def test_profile_run_snowflake_writes_registry_profile_and_returns_summary(tmp_path, monkeypatch):
+    """profile_snowflake_table() has had zero real callers anywhere in this
+    repo until this bridge method -- stubbed here (no reachable Snowflake
+    instance in this environment) to prove the bridge wraps it correctly,
+    same registry-path convention as profile.run."""
+    from datetime import datetime
+
+    from schema_inference.models import ColumnProfile, SchemaProfile, TableProfile
+
+    def fake_profile_snowflake_table(database, schema, table, source_name, table_name=None, **kwargs):
+        tname = table_name or table.lower()
+        col = ColumnProfile(
+            name="POLICY_ID", inferred_type="integer", null_rate=0.0, distinct_count=10,
+            sample_values=["1", "2"], value_distribution={},
+        )
+        return SchemaProfile(
+            source_name=source_name,
+            tables=[TableProfile(
+                name=tname, row_count=100, columns=[col], delimiter="",
+                source_file=f"{database}.{schema}.{table}",
+            )],
+            profiled_at=datetime.now(),
+            profile_hash="fakehash123",
+        )
+
+    monkeypatch.setattr("schema_inference.snowflake_reader.profile_snowflake_table", fake_profile_snowflake_table)
+
+    out = tmp_path / "profile.json"
+    resp = call(
+        "profile.run_snowflake",
+        database="DEV_DB", schema="PASL", table="pasl_policy",
+        source_name="pasl", output=str(out),
+    )
+    result = resp["result"]
+    assert result["table_name"] == "pasl_policy"
+    assert result["row_count"] == 100
+    assert result["column_count"] == 1
+    assert out.exists()
+    assert "POLICY_ID" in out.read_text(encoding="utf-8")
+
+
+def test_profile_run_snowflake_surfaces_connection_errors_as_app_error(monkeypatch):
+    def raise_connection_error(*args, **kwargs):
+        raise RuntimeError("250001: Could not connect to Snowflake backend")
+
+    monkeypatch.setattr("schema_inference.snowflake_reader.profile_snowflake_table", raise_connection_error)
+
+    resp = call(
+        "profile.run_snowflake",
+        database="DEV_DB", schema="PASL", table="pasl_policy", source_name="pasl",
+    )
+    assert resp["error"]["code"] == bridge.APP_ERROR
+    assert "Could not connect" in resp["error"]["message"]
+
+
 def test_metamodel_query_loss_runs_never_raises():
     resp = call("metamodel.query_loss_runs", source_name="pasl", limit=5)
     assert "loss_runs" in resp["result"]
