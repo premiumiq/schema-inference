@@ -52,6 +52,32 @@ def _max_tool_calls() -> int:
     except Exception:
         return MAX_TOOL_CALLS
 
+
+def _mandatory_tool_triggers() -> list[dict]:
+    """MAP-9 Layer 3 scaffold: mapping_agent.mandatory_tool_triggers from
+    agent_config.yml, falling back to an empty list. Mirrors
+    _max_tool_calls()'s graceful-fallback pattern.
+
+    Each entry is intended to have the shape
+    {"profile_flags": {...}, "tool": "<tool_name from TOOL_DISPATCH>"} — a
+    profile-flag pattern that tools/analyze_tool_usage.py's under-triggering
+    section found correlates strongly enough with a wrong mapping (skipping
+    the tool vs. calling it) that tool *selection* should be taken out of
+    the model's hands for that pattern, rather than left to prompt language.
+
+    Not yet consulted anywhere in the tool-use loop — see the
+    TODO(MAP-9 follow-up) comment in _map_one_column() below. This loader
+    exists so the config schema and the read path are both in place ahead
+    of that wiring, without behavior changing yet (the list is empty by
+    default in agent_config.yml, and a human populates it deliberately,
+    the same way tune_rule_weights.py --apply / tune_prompts.py --accept
+    require an explicit human action rather than self-promoting)."""
+    try:
+        from .orchestrator import load_agent_config
+        return list(load_agent_config().get("mapping_agent", {}).get("mandatory_tool_triggers", []))
+    except Exception:
+        return []
+
 _SYSTEM_PROMPT = """You are an insurance data engineering agent. Your job is to map ONE \
 source column from a legacy policy admin system (PAS-L) to a canonical insurance policy \
 schema, OR decide it belongs in extended_attributes (no canonical mapping).
@@ -173,6 +199,19 @@ async def _map_one_column(
     messages = [{"role": "user", "content": _build_user_prompt(col, source_name)}]
     tool_calls_log: list[AgentToolCall] = []
 
+    # TODO(MAP-9 follow-up): once agent_config.yml's mapping_agent.
+    # mandatory_tool_triggers has real entries (populated by a human after
+    # reviewing tools/analyze_tool_usage.py's under-triggering report), check
+    # _mandatory_tool_triggers() here against `col`'s profile flags *before*
+    # the loop below runs its first turn. On a match: auto-run the listed
+    # tool via TOOL_DISPATCH[trigger["tool"]], log it to tool_calls_log the
+    # same way a model-requested call is logged, and inject its result into
+    # `messages` as a synthetic tool-result turn — so the model starts
+    # reasoning already holding that lookup instead of tool *selection*
+    # being left to its discretion for a pattern the data says is
+    # unambiguous. Deferred: mandatory_tool_triggers is empty by default and
+    # this environment has no scored live-agent run history yet to derive a
+    # real trigger from (see analyze_tool_usage.py's module docstring).
     final: dict | None = None
     cached_system = [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
 

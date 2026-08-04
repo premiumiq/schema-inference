@@ -41,6 +41,21 @@ mapping_agent:
   concurrent_columns: 10        # columns queued in parallel; the shared throttle
                                  # above paces the actual request rate regardless —
                                  # this just controls how many columns wait their turn
+  # MAP-9 Layer 3 (scaffold only — see mapping_agent.py's
+  # _mandatory_tool_triggers() loader and the TODO(MAP-9 follow-up) comment
+  # at the point in the tool-use loop where a populated list would be
+  # consulted; not wired into actual gating behavior yet). Intended shape,
+  # one entry per deterministic gate a human has approved after reviewing a
+  # tools/analyze_tool_usage.py under-triggering report:
+  #   mandatory_tool_triggers:
+  #     - profile_flags: {is_coded_column: true}
+  #       tool: check_value_catalog
+  # profile_flags matches on ColumnProfile fields the same way
+  # metamodel/few_shot.py's profile signature does; tool is a name from
+  # agents/tools.py's TOOL_DISPATCH. Empty by default — same human-in-the-
+  # loop convention as tune_rule_weights.py --apply / tune_prompts.py
+  # --accept: analysis never self-promotes into gating behavior.
+  mandatory_tool_triggers: []
 
 critic_agent:
   model: claude-sonnet-4-6
