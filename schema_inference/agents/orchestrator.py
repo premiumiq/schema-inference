@@ -296,6 +296,14 @@ def run_mapping(
                     notes=m.notes,
                     profile_signature=build_profile_signature(prof) if prof else None,
                 )
+            # MAP-9 Step 1: persist per-column tool-call traces (mapping/critic/
+            # sql agent tool use) alongside the mapping decisions above, keyed
+            # by the same run_id + source_column so tools/analyze_tool_usage.py
+            # can join them against mapping_history.verdict once a run is
+            # scored. record_tool_usage() never raises (mirrors open_store()'s
+            # never-raise contract), so this is strictly additive -- a failure
+            # here cannot affect the rest of the pipeline.
+            store.record_tool_usage(run_id=run_id, source_name=source_name, traces=traces)
         finally:
             store.close()
 
