@@ -204,3 +204,27 @@ env vars (not just present in `.env` — see README's Requirements).
     repeat step 46 → confirm mappings fall back to the default `policy`
     schema again, demonstrating the registration really is session-only,
     not persisted anywhere.
+
+### 10c. Combined: Snowflake as both source and target
+
+The true end-to-end path — a live source table mapped against a live
+target table's own schema, no file and no hand-curated schema involved
+anywhere. §10a and §10b each verify one half; this pairs them.
+
+48. Run §10a (**Profile Snowflake Table**) against a real *source* table
+    (e.g. `DEV_SANDBOX_DB.PASL.PASL_POLICY`). Note the `table_name` the
+    "N/M columns mapped" message implies (same as what you typed, unless
+    the extension lowercased/adjusted it) — you'll need it exactly in
+    step 50.
+49. Run §10b steps 42–44 (**Extract Target Schema from Snowflake Table**)
+    against a real *target* table (e.g. `SLV_POLICY`), reviewing/editing
+    the JSON tab as before.
+50. Answer the table-name prompt with the **source** table's `table_name`
+    from step 48 (not a file-based one this time). Confirm the success
+    message names both.
+51. Re-run **Profile Snowflake Table** on the same source table from step
+    48 → confirm the resulting mappings target the extracted schema's
+    field names, not `policy`'s — same proof as step 46, but with a live
+    table on both ends instead of a file.
+52. Restart the bridge and repeat step 51 → confirm it falls back to
+    `policy` again, same as step 47.
