@@ -39,6 +39,8 @@ Public API:
         .get_few_shot_examples(source_name, status="active") -> list[dict]         (MAP-4 Layer 1)
         .has_few_shot_example(source_name, source_column, origin) -> bool          (MAP-4 Layer 1)
         .retire_few_shot_example(example_id, reason) -> int                        (MAP-4 Layer 1)
+        .record_tool_usage(run_id, source_name, traces) -> int                     (MAP-9 Layer 3)
+        .get_tool_usage_history(source_name, run_id=None, limit=5000) -> list[dict] (MAP-9 Layer 3)
         .close()
 
     open_store(db_path) -> MetamodelStore | None
@@ -149,6 +151,21 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pv_agent ON prompt_versions(agent_name, accepted);
+
+CREATE TABLE IF NOT EXISTS tool_usage_history (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL,
+    source_name     TEXT NOT NULL,
+    source_column   TEXT NOT NULL,
+    agent           TEXT NOT NULL,   -- 'mapping' | 'critic' | 'sql'
+    tool_name       TEXT NOT NULL,
+    call_order      INTEGER NOT NULL,
+    inputs_json     TEXT NOT NULL,
+    output_summary  TEXT,
+    recorded_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tuh_run    ON tool_usage_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_tuh_source ON tool_usage_history(source_name, source_column);
 """
 
 
@@ -454,6 +471,90 @@ class MetamodelStore:
             )
             self._conn.commit()
             return cur.rowcount
+
+    # ── tool_usage_history (MAP-9 Layer 3) ────────────────────────────────────
+
+    def record_tool_usage(
+        self,
+        run_id:      str,
+        source_name: str,
+        traces:      list,
+    ) -> int:
+        """Persists one row per AgentToolCall across the given traces, keyed by
+        run_id + source_column so it can be joined against mapping_history.verdict
+        once score_mappings.py scores the run (see tools/analyze_tool_usage.py).
+        call_order is the 0-based index of the call within its own trace's
+        tool_calls list, mirroring AgentTrace/AgentToolCall's shape in models.py.
+
+        Duck-typed: `traces` may be a list of AgentTrace/AgentToolCall pydantic
+        objects (models.py) OR plain dicts with the same field names
+        ('column_name', 'agent', 'tool_calls' -> list of dicts with 'tool_name',
+        'inputs', 'output'). This keeps store.py decoupled from the pydantic
+        model layer, same as every other record_* method here, and lets tests
+        build synthetic history without importing models.py.
+
+        Never raises -- mirrors open_store()'s never-raise contract so a
+        caller can fire this alongside record_mapping() without wrapping it
+        in its own try/except; a bad trace shape, a closed connection, or any
+        other failure just returns 0 rather than blocking the pipeline.
+        """
+        def _get(obj, key):
+            return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+        try:
+            rows = []
+            now = _now()
+            for trace in traces:
+                source_column = _get(trace, "column_name")
+                agent = _get(trace, "agent")
+                tool_calls = _get(trace, "tool_calls") or []
+                for order, call in enumerate(tool_calls):
+                    tool_name = _get(call, "tool_name")
+                    inputs = _get(call, "inputs")
+                    output = _get(call, "output")
+                    inputs_json = inputs if isinstance(inputs, str) else json.dumps(inputs, default=str)
+                    output_summary = output if isinstance(output, str) else json.dumps(output, default=str)
+                    if output_summary and len(output_summary) > 4000:
+                        output_summary = output_summary[:4000] + "...(truncated)"
+                    rows.append((
+                        _uid(), run_id, source_name, source_column, agent, tool_name,
+                        order, inputs_json, output_summary, now,
+                    ))
+
+            if not rows:
+                return 0
+
+            with self._lock:
+                self._conn.executemany(
+                    """
+                    INSERT INTO tool_usage_history
+                        (id, run_id, source_name, source_column, agent, tool_name,
+                         call_order, inputs_json, output_summary, recorded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+                self._conn.commit()
+            return len(rows)
+        except Exception:
+            return 0
+
+    def get_tool_usage_history(
+        self,
+        source_name: str,
+        run_id:      str | None = None,
+        limit:       int        = 5000,
+    ) -> list[dict]:
+        query = "SELECT * FROM tool_usage_history WHERE source_name = ?"
+        params: list[Any] = [source_name]
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        query += " ORDER BY run_id, source_column, call_order LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            cur = self._conn.execute(query, params)
+            return _rows(cur)
 
 
 # ── Factory ───────────────────────────────────────────────────────────────────
