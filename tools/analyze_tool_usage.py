@@ -132,6 +132,15 @@ def _load_joined_rows(source_name: str) -> list[dict]:
             "source_column": key[1],
             "verdict": verdict_by_key.get(key),
             "profile_signature": sig_by_key.get(key),
+            # NOTE: not filtered by agent -- mixes calls from every agent
+            # that touched this column (mapping/critic/sql). Safe today
+            # because only MappingAgent has a tool-use loop; critic_agent.py
+            # and sql_agent.py always write tool_calls=[]. If that changes,
+            # sections keyed to a single agent's semantics (_call_efficiency
+            # below compares this list's length against
+            # mapping_agent.max_tool_calls_per_column specifically) need to
+            # filter by row["agent"] first, or this report starts silently
+            # conflating agents.
             "calls": calls,
         })
     return joined
@@ -209,14 +218,24 @@ def _under_triggering(joined: list[dict], min_delta: float = 0.20) -> list[dict]
 # ── Section 2: call efficiency ─────────────────────────────────────────────────
 
 def _call_efficiency(joined: list[dict]) -> dict:
+    # max_tool_calls_per_column is specifically MappingAgent's cap (see
+    # mapping_agent.py's _max_tool_calls()) -- filter each trace's calls to
+    # agent="mapping" before comparing against it. Today this filter is a
+    # no-op (critic_agent.py/sql_agent.py always write tool_calls=[], per
+    # _load_joined_rows()'s NOTE above), but it stops this section from
+    # silently over-counting cutoffs/duplicates against the wrong agent's
+    # cap if that ever changes.
     max_calls = _max_tool_calls()
+    mapping_calls_by_row = [
+        [c for c in r["calls"] if c.get("agent") == "mapping"] for r in joined
+    ]
     total = len(joined)
-    cutoff = sum(1 for r in joined if len(r["calls"]) >= max_calls)
+    cutoff = sum(1 for calls in mapping_calls_by_row if len(calls) >= max_calls)
 
     duplicate_count = 0
-    for r in joined:
+    for calls in mapping_calls_by_row:
         seen: Counter = Counter()
-        for c in r["calls"]:
+        for c in calls:
             seen[(c["tool_name"], c["inputs_json"])] += 1
         duplicate_count += sum(n - 1 for n in seen.values() if n > 1)
 

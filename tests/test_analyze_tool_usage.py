@@ -130,6 +130,52 @@ def test_call_efficiency_flags_cutoff_and_duplicate_calls(tmp_path, monkeypatch)
     assert eff["duplicate_count"] == 1
 
 
+def test_call_efficiency_ignores_non_mapping_agent_calls(tmp_path, monkeypatch):
+    """PR #4 review item 1: max_tool_calls_per_column is MappingAgent's cap
+    specifically. A trace's calls from a different agent must not count
+    toward cutoff/duplicate detection, even though _load_joined_rows()
+    groups all of a column's calls together regardless of agent."""
+    store = _seeded_store(tmp_path)
+    monkeypatch.setattr("tools.analyze_tool_usage.open_store", lambda: store)
+    monkeypatch.setattr("tools.analyze_tool_usage._max_tool_calls", lambda: 2)
+    try:
+        store.record_mapping(
+            run_id="run4", source_name="pasl", table_name="pasl_policy",
+            source_column="COL_E", target_field="region_code", confidence=0.7,
+            method="critic", sql_expression="COL_E", verdict="TP",
+            profile_signature=_SIG,
+        )
+        # Same (run_id, source_column) key sees calls from both agents --
+        # the mapping-agent trace is well under the cutoff/has no
+        # duplicates, but a hypothetical critic trace on the same column
+        # hits both the cutoff and a duplicate. Only the mapping-agent
+        # calls should count.
+        store.record_tool_usage(run_id="run4", source_name="pasl", traces=[
+            {
+                "column_name": "COL_E", "agent": "mapping",
+                "tool_calls": [
+                    {"tool_name": "lookup_canonical", "inputs": {"name": "COL_E"}, "output": "{}"},
+                ],
+            },
+            {
+                "column_name": "COL_E", "agent": "critic",
+                "tool_calls": [
+                    {"tool_name": "check_value_catalog", "inputs": {"column": "COL_E"}, "output": "{}"},
+                    {"tool_name": "check_value_catalog", "inputs": {"column": "COL_E"}, "output": "{}"},
+                ],
+            },
+        ])
+
+        result = run_tool_usage_analysis(source_name="pasl")
+    finally:
+        store.close()
+
+    eff = result["call_efficiency"]
+    assert eff["total"] == 1
+    assert eff["cutoff_count"] == 0    # mapping's 1 call < cap of 2
+    assert eff["duplicate_count"] == 0  # mapping made no duplicate calls
+
+
 def test_columns_without_scored_verdict_are_excluded_from_marginal_value(tmp_path, monkeypatch):
     store = _seeded_store(tmp_path)
     monkeypatch.setattr("tools.analyze_tool_usage.open_store", lambda: store)
