@@ -21,6 +21,14 @@ pip install -e ".[dev]"
 cp .env.example .env        # fill in ANTHROPIC_API_KEY (and Snowflake creds if needed)
 ```
 
+Claude/Anthropic is the default LLM backend and needs no extra setup beyond
+`ANTHROPIC_API_KEY` above. To point the mapping pipeline at a different
+backend instead (OpenAI, Azure OpenAI, or any OpenAI-compatible server —
+Ollama, vLLM, LM Studio, ...), see `schema_inference/agent_config.yml`'s
+`llm:` section under Config below; `pip install openai` (or `pip install
+-e ".[openai]"`) is only needed if you actually select the `openai`
+provider there.
+
 ## Common commands
 
 `map` always takes a profile JSON (from `profile`), not a raw source file — the CLI
@@ -159,6 +167,36 @@ rule-engine weights, per-agent model IDs, thresholds, concurrency, and the
 rate limiter's RPM. Code always reads it through a loader with a hardcoded
 fallback (`_rule_weights()`, `load_agent_config()`, etc.) so a missing or
 partial file degrades gracefully rather than crashing.
+
+The `llm:` section (MAP-8) picks the LLM backend every agent and
+`tools/tune_prompts.py` talks to, via `schema_inference/llm/registry.py`'s
+`get_provider()` / `model_for()`:
+
+```yaml
+llm:
+  provider: anthropic          # anthropic | openai
+  providers:
+    anthropic:
+      api_key_env: ANTHROPIC_API_KEY
+    openai:
+      api_key_env: OPENAI_API_KEY
+      base_url: null            # set for Azure OpenAI / Ollama / vLLM / LM Studio / etc.
+  models:
+    mapping_agent: claude-haiku-4-5-20251001
+    critic_agent: claude-sonnet-4-6
+    sql_agent: claude-haiku-4-5-20251001
+    tune_prompts: claude-sonnet-4-6
+```
+
+`provider: anthropic` is the default and needs no code changes to use.
+Switching to `provider: openai` routes every call through
+`schema_inference/llm/providers/openai_provider.py` instead — set
+`OPENAI_API_KEY` (or whatever `api_key_env` names) and, for a non-OpenAI
+OpenAI-compatible server, `providers.openai.base_url`. Each agent's model
+ID falls back to its hardcoded default (mirroring the values above) if
+`models.<key>` is missing, same graceful-degradation contract as the rest
+of this file. See `schema_inference/llm/` and
+`docs/llm-provider-abstraction-and-tool-tuning-plan.md` for the design.
 
 ## Data tiers (`examples/insurance/`)
 

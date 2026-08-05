@@ -9,7 +9,21 @@ Two related asks:
    examples, and system prompts. Nothing tunes *which tools the agent calls,
    when, or how well*. Add that as a new layer.
 
-Both are scoped as plans only — no code changes made yet.
+## Status
+
+- **MAP-8 — implemented.** `schema_inference/llm/` (provider ABC, neutral
+  types/errors, Anthropic + OpenAI adapters), the `agent_config.yml` `llm:`
+  section, and all six call-site migrations described below are shipped
+  (PR #3). Section retained as the design record for that work — read it as
+  "what was built and why," not as a forward-looking plan.
+- **MAP-9 — Steps 1–2 implemented, Step 3 scaffolded only.**
+  `tool_usage_history` persistence and `tools/analyze_tool_usage.py`'s
+  offline report are shipped (PR #4). The `mandatory_tool_triggers` config
+  key and its loader exist but nothing reads them yet (explicit
+  `TODO(MAP-9 follow-up)` at the call site), and the few-shot/prompt-loss
+  integration described below is still just a plan — both need real
+  `analyze_tool_usage.py` output from a scored live-agent run before they're
+  worth implementing.
 
 ---
 

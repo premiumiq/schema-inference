@@ -17,6 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+# Only needed when agent_config.yml's llm.provider is set to "openai"
+# (schema_inference/llm/providers/openai_provider.py) -- see MAP-8.
+openai = ["openai>=1.0.0"]
 
 [project.scripts]
 schema-inference = "schema_inference.__main__:main"
