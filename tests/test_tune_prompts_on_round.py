@@ -22,9 +22,9 @@ def _stub_out_llm_and_heavy_calls(monkeypatch, holdout_improves: bool):
     """Every _run_and_score call is real agent-pipeline + real LLM cost
     (run_mapping(use_agent=True) inside it) -- stubbed out entirely so this
     test proves on_round's plumbing, not the tuning loop's actual quality.
-    summarize_failures/propose_edit are also stubbed rather than given fake
-    Anthropic clients, since their real behavior isn't what's under test
-    here (diff-ratio guardrails, JSON extraction, etc. are tune_prompts.py's
+    summarize_failures/propose_edit are also stubbed rather than given a fake
+    LLMProvider, since their real behavior isn't what's under test here
+    (diff-ratio guardrails, JSON extraction, etc. are tune_prompts.py's
     existing, separately-testable concerns)."""
     def fake_run_and_score(data_file, source_name, columns_subset, mapping_prompt=None, critic_prompt=None, label=""):
         if "HOLDOUT" in label and "BASELINE" not in label:
@@ -32,10 +32,10 @@ def _stub_out_llm_and_heavy_calls(monkeypatch, holdout_improves: bool):
         return SimpleNamespace(mean_loss=0.5), [_score("POL_NO", "FN", False)]
 
     monkeypatch.setattr(tp, "_run_and_score", fake_run_and_score)
-    monkeypatch.setattr(tp, "summarize_failures", lambda failures, current_prompt, client=None: {"failure_mode": "fake"})
+    monkeypatch.setattr(tp, "summarize_failures", lambda failures, current_prompt, provider=None: {"failure_mode": "fake"})
     monkeypatch.setattr(
         tp, "propose_edit",
-        lambda current_prompt, failure_mode, client=None: {"prompt": current_prompt + " EDIT", "rationale": "x", "diff_ratio": 0.9},
+        lambda current_prompt, failure_mode, provider=None: {"prompt": current_prompt + " EDIT", "rationale": "x", "diff_ratio": 0.9},
     )
     monkeypatch.setattr(tp, "open_store", lambda: None)
     monkeypatch.setattr(tp, "_current_prompt_text", lambda agent_name: "BASE PROMPT")

@@ -3,7 +3,8 @@
 Rule-based pass (rapidfuzz):
   confidence = 0.65 * name_sim + 0.25 * type_compat + 0.10 * pattern_bonus
 
-LLM pass (Claude Haiku, batches of ≤20):
+LLM pass (Claude Haiku by default -- config-driven, see schema_inference/llm/,
+batches of ≤20):
   Triggered for columns with rule-based confidence < llm_threshold (default 0.70).
   Columns below 0.50 after LLM also surface in reviewer as low-confidence.
 
@@ -24,6 +25,7 @@ from rapidfuzz import fuzz
 
 from .canonical import registry as canonical_registry
 from .canonical.policy import CANONICAL_BY_NAME, CANONICAL_FIELDS, CANONICAL_NAMES
+from .llm.registry import get_provider, model_for
 from .models import ColumnMapping, ColumnProfile, MappingProposal, TableProfile
 
 if TYPE_CHECKING:
@@ -316,15 +318,17 @@ def _run_llm_batch(
     canonical_fields: "list[CanonicalField] | None" = None,
     canonical_names: frozenset[str] | None = None,
 ) -> list[ColumnMapping]:
-    """Call Claude Haiku for up to LLM_BATCH_SIZE columns. Returns ColumnMapping list.
+    """Call the configured LLM provider (Claude Haiku by default) for up to
+    LLM_BATCH_SIZE columns. Returns ColumnMapping list.
 
     canonical_fields/canonical_names=None uses the default 'policy' schema —
-    see canonical/registry.py for table-specific schema resolution."""
-    try:
-        import anthropic
-    except ImportError:
-        raise ImportError("anthropic package required for LLM pass. Install: pip install anthropic")
+    see canonical/registry.py for table-specific schema resolution.
 
+    MAP-8: goes through schema_inference/llm/ instead of importing the
+    anthropic SDK directly. get_provider() raises a clear ImportError
+    (naming whichever SDK the configured provider needs) if that package
+    isn't installed -- same failure mode this function used to raise
+    itself for a missing `anthropic` package."""
     fields = canonical_fields if canonical_fields is not None else CANONICAL_FIELDS
     names = canonical_names if canonical_names is not None else CANONICAL_NAMES
 
@@ -389,15 +393,15 @@ SQL expression notes:
   - Cents to dollars: CAST(SOURCE_COL AS {{{{ common_assets.decimal_type(12, 2) }}}}) / 100.0
 - Return ONLY the JSON. No other text."""
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    provider = get_provider("mapping_agent")
+    response = provider.complete(
+        model=model_for("mapping_agent"),
         max_tokens=4096,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
 
-    raw = response.content[0].text.strip()
+    raw = response.text.strip()
     # Strip markdown code fences if present
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()

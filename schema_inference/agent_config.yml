@@ -1,6 +1,31 @@
 ﻿# Agent workflow configuration for the schema inference mapper.
 # Consumed by the orchestrator to set model names, thresholds, and concurrency.
 
+# MAP-8: which LLM backend the mapping/critic/sql agents and
+# tools/tune_prompts.py talk to, via schema_inference/llm/registry.py's
+# get_provider(). `provider` selects the adapter (anthropic | openai);
+# `providers.<name>` holds that adapter's connection config; `models.<key>`
+# is the model ID for a given agent/tool, read through model_for() with a
+# hardcoded fallback (see registry.py's _DEFAULT_MODELS) if this section or
+# a specific key is missing -- same graceful-degradation contract as
+# rule_engine.weights below. Claude/Anthropic is the default; point
+# `provider` at `openai` (and set `providers.openai.base_url` for Azure
+# OpenAI/Ollama/vLLM/LM Studio/etc.) to run the pipeline against a
+# different backend without touching any agent code.
+llm:
+  provider: anthropic
+  providers:
+    anthropic:
+      api_key_env: ANTHROPIC_API_KEY
+    openai:
+      api_key_env: OPENAI_API_KEY
+      base_url: null
+  models:
+    mapping_agent: claude-haiku-4-5-20251001
+    critic_agent: claude-sonnet-4-6
+    sql_agent: claude-haiku-4-5-20251001
+    tune_prompts: claude-sonnet-4-6
+
 # Rule-engine confidence weights — name_sim, type_compat, pattern_bonus must
 # sum to 1.0. These are the values mapper.py's _compute_confidence() reads by
 # default (mapper.py:_DEFAULT_RULE_WEIGHTS is the fallback if this section is
@@ -9,13 +34,15 @@
 # tuning one source (MAP-4 Layer 0, tools/tune_rule_weights.py --apply) never
 # clobbers another's — see the before/after loss it prints, and the matching
 # loss_runs row in the metamodel store.
-# Process-wide pacer + retry for every live Anthropic call (mapping/critic/sql
-# agents, tools/tune_prompts.py) — see schema_inference/agents/throttle.py.
-# Anthropic's org-level rate limit is enforced server-side and shared across
-# every script using this API key; 5/min matches the lowest published tier.
-# Raise this only after Anthropic has actually increased your org's limit
-# (https://console.anthropic.com/settings/limits) — raising the number here
-# without a real increase just makes 429s happen sooner.
+# Process-wide pacer + retry for every live LLM provider call (mapping/critic/
+# sql agents, tools/tune_prompts.py) — see schema_inference/agents/throttle.py.
+# The default Claude/Anthropic provider's org-level rate limit is enforced
+# server-side and shared across every script using this API key; 5/min matches
+# the lowest published tier. Raise this only after Anthropic has actually
+# increased your org's limit (https://console.anthropic.com/settings/limits)
+# — raising the number here without a real increase just makes 429s happen
+# sooner. If llm.provider is set to openai, tune this to whatever limit that
+# backend actually enforces instead.
 rate_limit:
   requests_per_minute: 5
 
@@ -35,7 +62,6 @@ rule_engine:
       pattern_bonus: 0.6500
 
 mapping_agent:
-  model: claude-haiku-4-5-20251001
   llm_threshold: 0.70          # rule-confidence below this routes to the agent
   max_tool_calls_per_column: 5
   concurrent_columns: 10        # columns queued in parallel; the shared throttle
@@ -58,13 +84,11 @@ mapping_agent:
   mandatory_tool_triggers: []
 
 critic_agent:
-  model: claude-sonnet-4-6
   enabled: true
   target_hard_columns: true     # review is_hard columns
   target_below_floor: true      # review columns below their confidence floor
 
 sql_agent:
-  model: claude-haiku-4-5-20251001
   batch_size: 20
 
 evaluator:
