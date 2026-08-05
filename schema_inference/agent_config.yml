@@ -62,8 +62,6 @@ rule_engine:
       pattern_bonus: 0.6500
 
 mapping_agent:
-  model: claude-haiku-4-5-20251001  # informational only -- the model actually
-                                     # used is llm.models.mapping_agent above
   llm_threshold: 0.70          # rule-confidence below this routes to the agent
   max_tool_calls_per_column: 5
   concurrent_columns: 10        # columns queued in parallel; the shared throttle
@@ -71,13 +69,11 @@ mapping_agent:
                                  # this just controls how many columns wait their turn
 
 critic_agent:
-  model: claude-sonnet-4-6  # informational only -- see llm.models.critic_agent above
   enabled: true
   target_hard_columns: true     # review is_hard columns
   target_below_floor: true      # review columns below their confidence floor
 
 sql_agent:
-  model: claude-haiku-4-5-20251001  # informational only -- see llm.models.sql_agent above
   batch_size: 20
 
 evaluator:
