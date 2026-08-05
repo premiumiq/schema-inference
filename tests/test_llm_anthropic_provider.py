@@ -151,6 +151,24 @@ def test_complete_normalizes_anthropic_exceptions(native_exc_cls, status, normal
         provider.complete(system="s", messages=[{"role": "user", "content": "hi"}], max_tokens=10, model="m")
 
 
+# ── _client_instance(): api_key_env resolution ──────────────────────────────
+
+def test_client_instance_raises_loudly_on_unset_custom_api_key_env(monkeypatch):
+    """A configured api_key_env that isn't actually populated must fail
+    loudly, not silently fall back to reading ANTHROPIC_API_KEY instead."""
+    monkeypatch.delenv("MY_CUSTOM_KEY", raising=False)
+    provider = AnthropicProvider(config={"api_key_env": "MY_CUSTOM_KEY"})
+    with pytest.raises(LLMAuthError, match="MY_CUSTOM_KEY"):
+        provider._client_instance()
+
+
+def test_client_instance_uses_custom_api_key_env_when_populated(monkeypatch):
+    monkeypatch.setenv("MY_CUSTOM_KEY", "sk-test-123")
+    provider = AnthropicProvider(config={"api_key_env": "MY_CUSTOM_KEY"})
+    client = provider._client_instance()
+    assert client.api_key == "sk-test-123"
+
+
 # ── get_provider() -> AnthropicProvider -> complete() end to end ───────────
 
 def test_get_provider_returns_anthropic_provider_and_complete_translates_response(monkeypatch, tmp_path):

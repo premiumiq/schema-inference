@@ -46,7 +46,21 @@ class AnthropicProvider(LLMProvider):
         # itself; only pass an explicit key when api_key_env names a
         # different variable than the SDK's own default, so behavior is
         # identical to today's bare anthropic.Anthropic() in the common case.
-        if api_key_env != "ANTHROPIC_API_KEY" and api_key:
+        if api_key_env != "ANTHROPIC_API_KEY":
+            if not api_key:
+                # A custom api_key_env was explicitly configured but isn't
+                # populated -- fail loudly. Falling through to bare
+                # anthropic.Anthropic() here would read ANTHROPIC_API_KEY
+                # instead, masking a config typo (api_key_env set to a var
+                # name that was never exported) as an unrelated downstream
+                # auth failure, or worse, a silent switch to whatever
+                # credential ANTHROPIC_API_KEY happens to hold.
+                raise LLMAuthError(
+                    f"llm.providers.anthropic.api_key_env is set to "
+                    f"'{api_key_env}', but that environment variable is "
+                    f"unset or empty. Export {api_key_env}, or remove the "
+                    f"api_key_env override to use the default ANTHROPIC_API_KEY."
+                )
             self._client = anthropic.Anthropic(api_key=api_key)
         else:
             self._client = anthropic.Anthropic()
