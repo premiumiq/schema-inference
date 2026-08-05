@@ -9,8 +9,9 @@ Per column it returns either:
   confirm                      — the existing mapping stands
   override(target, sql, why)   — the mapping is wrong; replace it
 
-Model: claude-sonnet-4-6 (stronger reasoning than Haiku for the adversarial task).
-Single batch call, not a per-column loop.
+Model: Claude Sonnet by default (stronger reasoning than Haiku for the
+adversarial task) — config-driven via agent_config.yml's llm: section
+(MAP-8), see _model() below. Single batch call, not a per-column loop.
 """
 
 from __future__ import annotations
@@ -19,13 +20,23 @@ import json
 
 import yaml
 
+from ..llm.registry import get_provider, model_for
 from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..canonical.policy import CANONICAL_BY_NAME
 from ..models import AgentTrace, ColumnMapping
 from .throttle import call_with_retry
 from .tools import _CATALOG_DIR, check_value_catalog
 
+# MAP-8: fallback default only, used when agent_config.yml's
+# llm.models.critic_agent is missing/partial — see _model() below.
 MODEL = "claude-sonnet-4-6"
+
+
+def _model() -> str:
+    """The configured model for the critic agent (agent_config.yml's
+    llm.models.critic_agent), falling back to the hardcoded MODEL constant.
+    Same pattern as mapping_agent.py's _model()."""
+    return model_for("critic_agent") or MODEL
 
 _SYSTEM_PROMPT = """You are a senior insurance data engineer performing an adversarial \
 review of proposed column mappings from a legacy policy admin system (PAS-L) to a \
@@ -136,8 +147,6 @@ def run_critic_agent(
     Returns:
         (updated_mappings, traces, override_count)
     """
-    import anthropic
-
     system_prompt = system_prompt_override or _active_system_prompt()
 
     catalog_notes = _load_catalog_notes(source_name)
@@ -173,19 +182,21 @@ def run_critic_agent(
         + json.dumps(review_items, indent=2)
     )
 
-    client = anthropic.Anthropic()
+    provider = get_provider("critic_agent")
     # Prompt caching: system_prompt repeats across every CriticAgent call within
     # a session (Layer 2's tuning loop calls this once per train/holdout run)
     # — cache_control lets repeats within the 5-min window skip re-billing the
     # cached prefix. No-op if below the model's minimum cacheable length.
-    response = call_with_retry(client, dict(
-        model=MODEL,
+    # MAP-8: applied by the Anthropic provider adapter; silently stripped by
+    # the OpenAI adapter (no equivalent concept on that backend).
+    response = call_with_retry(provider, dict(
+        model=_model(),
         max_tokens=2048,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     ))
 
-    raw = "".join(b.text for b in response.content if b.type == "text").strip()
+    raw = response.text.strip()
     # Strip fences / extract JSON
     if "```" in raw:
         import re
@@ -298,10 +309,8 @@ def resolve_contests(
     if not contests:
         return mappings, []
 
-    import anthropic
-
     by_name = canonical_by_name if canonical_by_name is not None else CANONICAL_BY_NAME
-    client = anthropic.Anthropic()
+    provider = get_provider("critic_agent")
     by_col = {m.source_column: m for m in mappings}
     unresolved: list[dict] = []
 
@@ -330,14 +339,14 @@ def resolve_contests(
             f"Which column genuinely maps to {target}?"
         )
 
-        response = call_with_retry(client, dict(
-            model=MODEL,
+        response = call_with_retry(provider, dict(
+            model=_model(),
             max_tokens=512,
             system=_CONTEST_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         ))
 
-        raw = "".join(b.text for b in response.content if b.type == "text").strip()
+        raw = response.text.strip()
         if "```" in raw:
             import re
             fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)

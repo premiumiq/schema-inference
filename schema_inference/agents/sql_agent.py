@@ -12,7 +12,8 @@ For each candidate, the agent produces a finalized SQL expression that:
 
 Falls back to the rule-based _generate_sql() result on malformed output.
 
-Model: claude-haiku-4-5-20251001. Single batch call.
+Model: Claude Haiku by default — config-driven via agent_config.yml's llm:
+section (MAP-8), see _model() below. Single batch call.
 """
 
 from __future__ import annotations
@@ -21,11 +22,21 @@ import json
 import re
 
 from ..canonical.policy import CANONICAL_BY_NAME
+from ..llm.registry import get_provider, model_for
 from ..mapper import _generate_sql
 from ..models import AgentTrace, ColumnMapping
 from .throttle import call_with_retry
 
+# MAP-8: fallback default only, used when agent_config.yml's
+# llm.models.sql_agent is missing/partial — see _model() below.
 MODEL = "claude-haiku-4-5-20251001"
+
+
+def _model() -> str:
+    """The configured model for the SQL agent (agent_config.yml's
+    llm.models.sql_agent), falling back to the hardcoded MODEL constant.
+    Same pattern as mapping_agent.py's _model()."""
+    return model_for("sql_agent") or MODEL
 
 _SYSTEM_PROMPT = """You are an insurance data engineer finalizing dbt SQL expressions for \
 approved column mappings from a legacy PAS-L source to a canonical policy schema.
@@ -76,8 +87,6 @@ def run_sql_agent(
 
     canonical_by_name=None uses the default 'policy' schema — callers with a
     table-specific schema (see canonical/registry.py) pass it explicitly."""
-    import anthropic
-
     by_name = canonical_by_name if canonical_by_name is not None else CANONICAL_BY_NAME
 
     candidates = [m for m in mappings if _needs_sql_agent(m)]
@@ -104,18 +113,18 @@ def run_sql_agent(
         + json.dumps(items, indent=2)
     )
 
-    client = anthropic.Anthropic()
+    provider = get_provider("sql_agent")
     # Prompt caching: _SYSTEM_PROMPT is a fixed constant repeated across every
     # SQLAgent call within the 5-min cache window — see mapping_agent.py's
     # _CACHE_CONTROL comment for the full rationale.
-    response = call_with_retry(client, dict(
-        model=MODEL,
+    response = call_with_retry(provider, dict(
+        model=_model(),
         max_tokens=1536,
         system=[{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     ))
 
-    raw = "".join(b.text for b in response.content if b.type == "text").strip()
+    raw = response.text.strip()
     if "```" in raw:
         fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
         if fenced:

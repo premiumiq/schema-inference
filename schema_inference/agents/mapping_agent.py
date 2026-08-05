@@ -20,11 +20,15 @@ from __future__ import annotations
 import asyncio
 import json
 
+from ..llm.registry import get_provider, model_for
+from ..llm.types import LLMToolDef
 from ..metamodel.few_shot import format_examples_block, retrieve_examples
 from ..models import AgentToolCall, AgentTrace, ColumnMapping, ColumnProfile
 from .throttle import acall_with_retry
 from .tools import TOOL_DISPATCH, TOOL_SCHEMAS, register_profiles
 
+# MAP-8: fallback default only, used when agent_config.yml's
+# llm.models.mapping_agent is missing/partial — see _model() below.
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOOL_CALLS = 5
 DEFAULT_CONCURRENCY = 10
@@ -36,9 +40,22 @@ DEFAULT_CONCURRENCY = 10
 # error) if the prefix is below the model's minimum cacheable length; safe to
 # leave on unconditionally. Cuts input-token cost on every call after the first
 # within the 5-min cache window — biggest single lever for MappingAgent cost.
+# MAP-8: cache_control travels on the neutral LLMToolDef now; the Anthropic
+# provider adapter applies it to the wire request, the OpenAI adapter
+# silently strips it (no equivalent on that backend).
 _CACHE_CONTROL = {"type": "ephemeral"}
-_TOOL_SCHEMAS_CACHED = [dict(t) for t in TOOL_SCHEMAS]
-_TOOL_SCHEMAS_CACHED[-1] = {**_TOOL_SCHEMAS_CACHED[-1], "cache_control": _CACHE_CONTROL}
+_TOOL_DEFS_CACHED = [
+    LLMToolDef(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+    for t in TOOL_SCHEMAS
+]
+_TOOL_DEFS_CACHED[-1] = _TOOL_DEFS_CACHED[-1].model_copy(update={"cache_control": _CACHE_CONTROL})
+
+
+def _model() -> str:
+    """The configured model for the mapping agent (agent_config.yml's
+    llm.models.mapping_agent), falling back to the hardcoded MODEL constant.
+    Same pattern as _max_tool_calls() below / mapper.py's _rule_weights()."""
+    return model_for("mapping_agent") or MODEL
 
 
 def _max_tool_calls() -> int:
@@ -161,14 +178,17 @@ def _extract_final_answer(text: str) -> dict:
 
 
 async def _map_one_column(
-    client,
+    provider,
     col: ColumnProfile,
     source_table: str,
     source_name: str,
     system_prompt: str,
     max_tool_calls: int,
 ) -> tuple[ColumnMapping, AgentTrace]:
-    """Run the tool-use loop for a single column. Returns (mapping, trace)."""
+    """Run the tool-use loop for a single column. Returns (mapping, trace).
+
+    `provider` is an schema_inference.llm.LLMProvider (MAP-8) — Claude Haiku
+    by default, config-driven via agent_config.yml's llm: section."""
 
     messages = [{"role": "user", "content": _build_user_prompt(col, source_name)}]
     tool_calls_log: list[AgentToolCall] = []
@@ -181,56 +201,56 @@ async def _map_one_column(
         use_tools = len(tool_calls_log) < max_tool_calls
 
         kwargs = dict(
-            model=MODEL,
+            model=_model(),
             max_tokens=1024,
             system=cached_system,
             messages=messages,
         )
         if use_tools:
-            kwargs["tools"] = _TOOL_SCHEMAS_CACHED
+            kwargs["tools"] = _TOOL_DEFS_CACHED
 
-        # The anthropic SDK call is synchronous; run it in a thread so asyncio
+        # The provider call is synchronous; run it in a thread so asyncio
         # can run other columns concurrently. Retry on rate-limit (429) with backoff.
-        response = await acall_with_retry(client, kwargs)
+        response = await acall_with_retry(provider, kwargs)
 
-        # Did Claude ask to use a tool?
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+        # Did the model ask to use a tool?
+        tool_calls = response.tool_calls if use_tools else []
 
-        if tool_use_blocks and use_tools:
-            # Append Claude's turn (its tool requests) to the conversation
+        if tool_calls:
+            # Append the model's turn (its tool requests) to the conversation
             messages.append({"role": "assistant", "content": response.content})
 
             # Execute every requested tool and collect the results
             tool_results = []
-            for block in tool_use_blocks:
-                fn = TOOL_DISPATCH.get(block.name)
+            for call in tool_calls:
+                fn = TOOL_DISPATCH.get(call.name)
                 try:
-                    result = fn(**block.input) if fn else None
+                    result = fn(**call.input) if fn else None
                 except Exception as e:  # noqa: BLE001
                     result = {"error": str(e)}
                 result_json = json.dumps(result, default=str)
 
                 tool_calls_log.append(
                     AgentToolCall(
-                        tool_name=block.name,
-                        inputs=dict(block.input),
+                        tool_name=call.name,
+                        inputs=dict(call.input),
                         output=result_json,
                     )
                 )
                 tool_results.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "tool_use_id": call.id,
                         "content": result_json,
                     }
                 )
 
-            # Send the tool results back so Claude can continue reasoning
+            # Send the tool results back so the model can continue reasoning
             messages.append({"role": "user", "content": tool_results})
             continue
 
-        # No tool use -> Claude gave a text answer. Parse it and stop.
-        text = "".join(b.text for b in response.content if b.type == "text")
+        # No tool use -> the model gave a text answer. Parse it and stop.
+        text = response.text
         try:
             final = _extract_final_answer(text)
         except Exception:  # noqa: BLE001
@@ -286,14 +306,12 @@ async def _run_async(
     max_tool_calls: int,
 ) -> list[tuple[ColumnMapping, AgentTrace]]:
     """Run all columns concurrently, capped at `concurrency` in flight."""
-    import anthropic
-
-    client = anthropic.Anthropic()
+    provider = get_provider("mapping_agent")
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _guarded(col: ColumnProfile):
         async with semaphore:
-            return await _map_one_column(client, col, source_table, source_name, system_prompt, max_tool_calls)
+            return await _map_one_column(provider, col, source_table, source_name, system_prompt, max_tool_calls)
 
     return await asyncio.gather(*[_guarded(c) for c in columns])
 

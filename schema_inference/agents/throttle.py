@@ -1,4 +1,4 @@
-"""Process-wide rate limiter + retry for live Anthropic API calls.
+"""Process-wide rate limiter + retry for live LLM provider calls.
 
 Why: the org-level rate limit (free/build tiers can be as low as 5 req/min,
 enforced server-side per account — shared across every agent in this
@@ -18,6 +18,13 @@ Configure via agent_config.yml's rate_limit.requests_per_minute (default 5,
 matching the lowest published tier). Raise it there if your org's limit is
 higher — see docs/self-tuning-mapper-agent-plan.md and the rate-limit error
 message for how to request an increase from Anthropic.
+
+MAP-8: the pacer/backoff logic itself was already provider-agnostic — only
+the exception type it catches was Anthropic-specific
+(`anthropic.RateLimitError`). It now catches the normalized
+`schema_inference.llm.errors.LLMRateLimitError`; each provider adapter
+(schema_inference/llm/providers/) is responsible for translating its native
+SDK's rate-limit exception into that type at the call boundary.
 """
 
 from __future__ import annotations
@@ -83,33 +90,37 @@ def _backoff_delay(attempt: int, delay: float) -> tuple[float, float]:
     return delay + jitter, next_delay
 
 
-def call_with_retry(client, kwargs: dict, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_DELAY):
+def call_with_retry(provider, kwargs: dict, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_DELAY):
     """Synchronous: throttle, call, retry with jittered backoff on 429.
-    Use for any single-shot (non-asyncio) client.messages.create call —
-    critic_agent.py, sql_agent.py, tools/tune_prompts.py."""
-    import anthropic
+    Use for any single-shot (non-asyncio) provider.complete() call —
+    critic_agent.py, sql_agent.py, tools/tune_prompts.py.
+
+    `provider` is an schema_inference.llm.LLMProvider; `kwargs` are the
+    keyword arguments for its complete() method (system/messages/tools/
+    max_tokens/model/...)."""
+    from ..llm.errors import LLMRateLimitError
     delay = initial_delay
     for attempt in range(max_retries):
         throttle()
         try:
-            return client.messages.create(**kwargs)
-        except anthropic.RateLimitError:
+            return provider.complete(**kwargs)
+        except LLMRateLimitError:
             if attempt == max_retries - 1:
                 raise
             sleep_for, delay = _backoff_delay(attempt, delay)
             time.sleep(sleep_for)
 
 
-async def acall_with_retry(client, kwargs: dict, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_DELAY):
+async def acall_with_retry(provider, kwargs: dict, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_DELAY):
     """Async: throttle, call (in a thread), retry with jittered backoff on
     429. Use inside asyncio code — mapping_agent.py's per-column loop."""
-    import anthropic
+    from ..llm.errors import LLMRateLimitError
     delay = initial_delay
     for attempt in range(max_retries):
         await athrottle()
         try:
-            return await asyncio.to_thread(client.messages.create, **kwargs)
-        except anthropic.RateLimitError:
+            return await asyncio.to_thread(provider.complete, **kwargs)
+        except LLMRateLimitError:
             if attempt == max_retries - 1:
                 raise
             sleep_for, delay = _backoff_delay(attempt, delay)

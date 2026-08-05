@@ -35,9 +35,11 @@ Usage:
     python tools/tune_prompts.py --accept <version_id>
     python tools/tune_prompts.py --determinism-check <version_id> --repeats 3
 
-Requires ANTHROPIC_API_KEY (the diagnose/propose/validate steps make real
-LLM calls). diagnosis_client/tuner_client params on run_tuning_session() are
-injectable for testing the loop mechanics without live calls.
+Requires credentials for the configured LLM provider (ANTHROPIC_API_KEY by
+default, MAP-8's agent_config.yml llm: section -- the diagnose/propose/
+validate steps make real LLM calls). diagnosis_client/tuner_client params
+on run_tuning_session() are injectable for testing the loop mechanics
+without live calls.
 """
 
 from __future__ import annotations
@@ -70,11 +72,23 @@ import yaml
 
 from schema_inference.agents.orchestrator import run_mapping
 from schema_inference.agents.throttle import call_with_retry
+from schema_inference.llm.registry import model_for
 from schema_inference.mapper import _CDC_RE
 from schema_inference.metamodel.store import open_store
 from schema_inference.profiler import profile_file
 
 import score_mappings as scorer
+
+# MAP-8: fallback default only, used when agent_config.yml's
+# llm.models.tune_prompts is missing/partial.
+_MODEL_FALLBACK = "claude-sonnet-4-6"
+
+
+def _model() -> str:
+    """The configured model for the diagnose/propose LLM calls
+    (agent_config.yml's llm.models.tune_prompts), falling back to the
+    hardcoded default. Same pattern as the agent modules' _model()."""
+    return model_for("tune_prompts") or _MODEL_FALLBACK
 
 GROUND_TRUTH_DIR = Path(
     __import__("os").environ.get("SCHEMA_INFERENCE_CATALOG_DIR")
@@ -262,27 +276,28 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
-def summarize_failures(failures: list[dict], current_prompt: str, client=None) -> dict:
-    """LLM call. `client` is injectable for testing — must expose
-    .messages.create(**kwargs) -> response with .content[0].text (the
-    anthropic SDK response shape)."""
+def summarize_failures(failures: list[dict], current_prompt: str, provider=None) -> dict:
+    """LLM call. `provider` is injectable for testing — must expose
+    .complete(**kwargs) -> LLMResponse (schema_inference.llm.LLMProvider's
+    interface). Defaults to the configured provider (MAP-8, Claude Sonnet
+    by default) via get_provider()/model_for()."""
     if not failures:
         return {"failure_mode": "No training-split failures.", "affected_columns": [], "suggested_fix_direction": ""}
 
-    if client is None:
-        import anthropic
-        client = anthropic.Anthropic()
+    if provider is None:
+        from schema_inference.llm.registry import get_provider
+        provider = get_provider("tune_prompts")
 
     user_prompt = (
         "Current system prompt:\n---\n" + current_prompt + "\n---\n\n"
         "Failures on the training split:\n" + json.dumps(failures, indent=2)
     )
-    response = call_with_retry(client, dict(
-        model="claude-sonnet-4-6", max_tokens=1024,
+    response = call_with_retry(provider, dict(
+        model=_model(), max_tokens=1024,
         system=[{"type": "text", "text": _DIAGNOSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     ))
-    text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
+    text = response.text
     try:
         return _extract_json(text)
     except Exception:
@@ -305,24 +320,25 @@ Respond with ONLY a JSON object:
 }"""
 
 
-def propose_edit(current_prompt: str, failure_mode: str, client=None) -> dict | None:
+def propose_edit(current_prompt: str, failure_mode: str, provider=None) -> dict | None:
     """Returns {"prompt", "rationale", "diff_ratio"} or None if the proposal
     fails the diff-size guardrail (MIN_DIFF_RATIO/MAX_DIFF_RATIO) — too small
-    a change is a no-op, too large is a rewrite, not a targeted edit."""
-    if client is None:
-        import anthropic
-        client = anthropic.Anthropic()
+    a change is a no-op, too large is a rewrite, not a targeted edit.
+    `provider` is injectable for testing — see summarize_failures()."""
+    if provider is None:
+        from schema_inference.llm.registry import get_provider
+        provider = get_provider("tune_prompts")
 
     user_prompt = (
         f"Failure pattern to fix:\n{failure_mode}\n\n"
         f"Current prompt:\n---\n{current_prompt}\n---"
     )
-    response = call_with_retry(client, dict(
-        model="claude-sonnet-4-6", max_tokens=4096,
+    response = call_with_retry(provider, dict(
+        model=_model(), max_tokens=4096,
         system=[{"type": "text", "text": _TUNER_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     ))
-    text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
+    text = response.text
     try:
         data = _extract_json(text)
     except Exception:
@@ -424,10 +440,10 @@ def run_tuning_session(
             print("  no failures on train split — nothing to diagnose, stopping early.")
             break
 
-        diagnosis = summarize_failures(failures, best_prompt, client=diagnosis_client)
+        diagnosis = summarize_failures(failures, best_prompt, provider=diagnosis_client)
         print(f"  failure_mode: {str(diagnosis.get('failure_mode', ''))[:120]}")
 
-        candidate = propose_edit(best_prompt, diagnosis.get("failure_mode", ""), client=tuner_client)
+        candidate = propose_edit(best_prompt, diagnosis.get("failure_mode", ""), provider=tuner_client)
         if candidate is None:
             print("  proposal rejected by diff-size guardrail (no-op or full rewrite) — skipping round.")
             non_improving_streak += 1
