@@ -281,7 +281,15 @@ export class TuningPanel {
   ${this.renderLayer3()}
 
 <script nonce="${nonce}">
-  const vscode = acquireVsCodeApi();
+  // acquireVsCodeApi() may only be called once per webview lifetime, but
+  // render() reassigns panel.webview.html (full re-render) after every
+  // action, re-running this whole script block -- a second call throws,
+  // which aborts the script before any addEventListener below runs. That
+  // silently kills every button in the panel after the first successful
+  // click, not just whichever section triggered the re-render. Cache on
+  // window so a re-run script reuses the same handle instead of
+  // re-acquiring.
+  const vscode = window.__schemaInferenceVscodeApi || (window.__schemaInferenceVscodeApi = acquireVsCodeApi());
 
   function q(sel) { return document.querySelector(sel); }
 
