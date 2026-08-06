@@ -147,6 +147,14 @@ constraint:
     **Accept** on an unaccepted candidate → confirm a **modal confirm**
     appears before anything happens; confirm it → candidate now shows an
     "accepted" badge and the active-prompt status updates.
+35. **Layer 3**: uses the same source field + **Load** button as Layer 0/1
+    (no separate control) — report-only, no apply/accept action. With no
+    prior `--agent` runs for the typed source, confirm it shows the
+    "no tool_usage_history yet" message rather than empty tables. After
+    running `map ... --agent --eval` at least once against that source
+    (§4), click **Load** again → confirm the trace count, call-efficiency
+    summary line, and (if any grouped data exists) the marginal-value /
+    under-triggering tables populate.
 
 ## 9. Installed-extension check (optional)
 

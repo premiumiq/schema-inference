@@ -204,6 +204,47 @@ export interface Layer2SessionResult {
   determinism: { losses: number[]; mean: number; stdev: number } | null;
 }
 
+export interface ToolMarginalValueRow {
+  group: string;
+  tool: string;
+  called_acc: number;
+  called_n: number;
+  not_called_acc: number;
+  not_called_n: number;
+  delta: number;
+}
+
+export interface ToolCallEfficiency {
+  total: number;
+  max_tool_calls_per_column: number;
+  cutoff_count: number;
+  cutoff_pct: number;
+  duplicate_count: number;
+}
+
+export interface ToolUnderTriggeringRow {
+  group: string;
+  tool: string;
+  error_rate_with: number;
+  n_with: number;
+  error_rate_without: number;
+  n_without: number;
+  delta: number;
+}
+
+// MAP-9 Layer 3 (tools/analyze_tool_usage.py) -- report only, no --apply/
+// accept action exists yet, so unlike Layer 0/2 there's no RunLayer3Result
+// vs. a separate status shape: this IS the status. marginal_value/
+// call_efficiency/under_triggering are always present (the bridge fills
+// them in even when rows === 0 -- see _m_tuning_run_layer3 in bridge.py).
+export interface RunLayer3Result {
+  source_name: string;
+  rows: number;
+  marginal_value: ToolMarginalValueRow[];
+  call_efficiency: ToolCallEfficiency | null;
+  under_triggering: ToolUnderTriggeringRow[];
+}
+
 // ─── Snowflake as a mapping target ──────────────────────────────────────────
 
 export interface DraftCanonicalField {

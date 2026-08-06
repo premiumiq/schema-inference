@@ -624,6 +624,29 @@ def _m_tuning_run_layer2_session(params: dict) -> dict:
     )
 
 
+def _m_tuning_run_layer3(params: dict) -> dict:
+    """Layer 3 (tools/analyze_tool_usage.py): tool-call usage vs. outcome
+    report -- see docs/llm-provider-abstraction-and-tool-tuning-plan.md,
+    MAP-9 Step 2. Report-only, like the CLI: no --apply/accept action
+    exists here either, so unlike Layer 0/2 there's no separate cheap
+    "status" call -- this one call is both. Any mandatory_tool_triggers a
+    human decides to add from this report are still hand-edited into
+    agent_config.yml (see mapping_agent.py's _mandatory_tool_triggers()
+    scaffold) -- same never-auto-promote convention as Layer 0's --apply
+    / Layer 2's --accept.
+
+    run_tool_usage_analysis() returns only {source_name, rows: 0} when
+    tool_usage_history is empty for this source; fill in the rest so the
+    extension only has to handle one response shape."""
+    from tools.analyze_tool_usage import run_tool_usage_analysis
+
+    result = run_tool_usage_analysis(source_name=params.get("source_name", "pasl"))
+    result.setdefault("marginal_value", [])
+    result.setdefault("call_efficiency", None)
+    result.setdefault("under_triggering", [])
+    return result
+
+
 def _m_tracker_check(params: dict) -> dict:
     from .profiler import profile_file
     from .tracker import BreakingSchemaChangeError, record_or_compare
@@ -725,6 +748,7 @@ _METHODS: dict[str, Callable[[dict], dict]] = {
     "tuning.prompt_versions": _m_tuning_prompt_versions,
     "tuning.accept_prompt_version": _m_tuning_accept_prompt_version,
     "tuning.run_layer2_session": _m_tuning_run_layer2_session,
+    "tuning.run_layer3": _m_tuning_run_layer3,
 }
 
 

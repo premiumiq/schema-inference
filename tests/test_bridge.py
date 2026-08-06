@@ -359,6 +359,51 @@ def test_tuning_run_layer2_session_streams_tuning_progress_notifications(monkeyp
                                                     "improved": True, "regressed": []})]
 
 
+def test_tuning_run_layer3_shape_when_store_empty():
+    """No isolation needed for the empty-data path -- run_tool_usage_analysis()
+    already degrades gracefully (see test_analyze_tool_usage.py), this just
+    proves the bridge fills in marginal_value/call_efficiency/under_triggering
+    so the extension doesn't have to handle a second response shape."""
+    resp = call("tuning.run_layer3", source_name="bridge_smoke_test_source_layer3")
+    result = resp["result"]
+    assert result["source_name"] == "bridge_smoke_test_source_layer3"
+    assert result["rows"] == 0
+    assert result["marginal_value"] == []
+    assert result["call_efficiency"] is None
+    assert result["under_triggering"] == []
+
+
+def test_tuning_run_layer3_shape_with_data(tmp_path, monkeypatch):
+    """Real dispatch(), stubbed store -- proves the bridge wraps
+    run_tool_usage_analysis() correctly (right param name, dict passed
+    through) without depending on real tool_usage_history existing.
+    analyze_tool_usage.py's own grouping/scoring logic is already covered
+    by test_analyze_tool_usage.py; this is call-site wiring only."""
+    from schema_inference.metamodel.store import MetamodelStore
+
+    def fake_open_store():
+        store = MetamodelStore(tmp_path / "metamodel.db")
+        store.record_mapping(
+            run_id="run1", source_name="pasl", table_name="pasl_policy",
+            source_column="COL_A", target_field="region_code", confidence=0.9,
+            method="llm", sql_expression="COL_A", verdict="TP",
+            profile_signature={"inferred_type": "string", "is_id_column": False,
+                                "is_coded_column": True, "is_cents_integer": False, "date_format": None},
+        )
+        store.record_tool_usage(run_id="run1", source_name="pasl", traces=[
+            {"column_name": "COL_A", "agent": "mapping",
+             "tool_calls": [{"tool_name": "check_value_catalog", "inputs": {}, "output": "{}"}]},
+        ])
+        return store
+
+    monkeypatch.setattr("tools.analyze_tool_usage.open_store", fake_open_store)
+
+    resp = call("tuning.run_layer3", source_name="pasl")
+    result = resp["result"]
+    assert result["rows"] == 1
+    assert result["call_efficiency"]["total"] == 1
+
+
 def test_tracker_check_first_then_no_change(tmp_path, monkeypatch):
     monkeypatch.setattr("schema_inference.tracker.REGISTRY_DIR", tmp_path / "registry")
 
