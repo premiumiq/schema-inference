@@ -77,7 +77,7 @@ export class TuningPanel {
   private layer3: RunLayer3Result | null = null;
 
   private constructor(
-    private readonly bridge: BridgeClient,
+    private bridge: BridgeClient,
     private readonly diffProvider: PromptDiffProvider,
     defaultSourceName: string,
   ) {
@@ -95,7 +95,19 @@ export class TuningPanel {
 
   static createOrShow(bridge: BridgeClient, diffProvider: PromptDiffProvider, defaultSourceName: string): void {
     if (TuningPanel.current) {
+      // Rebind to whatever bridge client is live *now*, not whichever one
+      // was live when this panel was first constructed. Without this, a
+      // bridge restart (crash recovery, "Restart Bridge Process", Python
+      // interpreter change) while this panel is still open leaves every
+      // button silently talking to a dead child process -- requests never
+      // resolve or reject (Node doesn't reliably surface a write to a dead
+      // process's stdin), so nothing in the panel ever visibly reacts to a
+      // click, with no error, banner, or console output anywhere to point
+      // at why. Cheap to always do, not just when the bridge actually
+      // changed underneath it.
+      TuningPanel.current.bridge = bridge;
       TuningPanel.current.panel.reveal(vscode.ViewColumn.Beside);
+      void TuningPanel.current.loadAll();
       return;
     }
     TuningPanel.current = new TuningPanel(bridge, diffProvider, defaultSourceName);
