@@ -10,6 +10,7 @@ import {
   PromptVersionsResult,
   RunLayer0Result,
   RunLayer1CurationResult,
+  RunLayer3Result,
 } from './types';
 
 function getNonce(): string {
@@ -73,9 +74,10 @@ export class TuningPanel {
   private layer2SessionResult: Layer2SessionResult | null = null;
   private layer2Progress: Layer2Round[] = [];
   private layer2Running = false;
+  private layer3: RunLayer3Result | null = null;
 
   private constructor(
-    private readonly bridge: BridgeClient,
+    private bridge: BridgeClient,
     private readonly diffProvider: PromptDiffProvider,
     defaultSourceName: string,
   ) {
@@ -93,7 +95,19 @@ export class TuningPanel {
 
   static createOrShow(bridge: BridgeClient, diffProvider: PromptDiffProvider, defaultSourceName: string): void {
     if (TuningPanel.current) {
+      // Rebind to whatever bridge client is live *now*, not whichever one
+      // was live when this panel was first constructed. Without this, a
+      // bridge restart (crash recovery, "Restart Bridge Process", Python
+      // interpreter change) while this panel is still open leaves every
+      // button silently talking to a dead child process -- requests never
+      // resolve or reject (Node doesn't reliably surface a write to a dead
+      // process's stdin), so nothing in the panel ever visibly reacts to a
+      // click, with no error, banner, or console output anywhere to point
+      // at why. Cheap to always do, not just when the bridge actually
+      // changed underneath it.
+      TuningPanel.current.bridge = bridge;
       TuningPanel.current.panel.reveal(vscode.ViewColumn.Beside);
+      void TuningPanel.current.loadAll();
       return;
     }
     TuningPanel.current = new TuningPanel(bridge, diffProvider, defaultSourceName);
@@ -111,6 +125,7 @@ export class TuningPanel {
           this.sourceName = msg.source_name || this.sourceName;
           await this.loadLayer0();
           await this.loadLayer1();
+          await this.loadLayer3();
           break;
         case 'runLayer0':
           this.layer0RunResult = await this.bridge.request<RunLayer0Result>('tuning.run_layer0', {
@@ -167,7 +182,7 @@ export class TuningPanel {
 
   private async loadAll(): Promise<void> {
     try {
-      await Promise.all([this.loadLayer0(), this.loadLayer1(), this.loadLayer2()]);
+      await Promise.all([this.loadLayer0(), this.loadLayer1(), this.loadLayer2(), this.loadLayer3()]);
     } catch (err) {
       const message = err instanceof BridgeError ? err.message : String(err);
       vscode.window.showErrorMessage(`Schema Inference: ${message}`);
@@ -185,6 +200,10 @@ export class TuningPanel {
 
   private async loadLayer2(): Promise<void> {
     this.layer2 = await this.bridge.request<PromptVersionsResult>('tuning.prompt_versions', { agent_name: this.agentName });
+  }
+
+  private async loadLayer3(): Promise<void> {
+    this.layer3 = await this.bridge.request<RunLayer3Result>('tuning.run_layer3', { source_name: this.sourceName });
   }
 
   private viewDiff(versionId: string, candidateText: string): void {
@@ -239,6 +258,7 @@ export class TuningPanel {
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 0 1rem 2rem; }
   h2 { border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 4px; margin-top: 2rem; }
+  h3 { margin-top: 1.25rem; margin-bottom: 0.25rem; font-size: 1em; opacity: 0.9; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 0.75rem; }
   td, th { padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; text-align: left; }
   input, select { font-family: inherit; }
@@ -258,9 +278,18 @@ export class TuningPanel {
   ${this.renderLayer0()}
   ${this.renderLayer1()}
   ${this.renderLayer2()}
+  ${this.renderLayer3()}
 
 <script nonce="${nonce}">
-  const vscode = acquireVsCodeApi();
+  // acquireVsCodeApi() may only be called once per webview lifetime, but
+  // render() reassigns panel.webview.html (full re-render) after every
+  // action, re-running this whole script block -- a second call throws,
+  // which aborts the script before any addEventListener below runs. That
+  // silently kills every button in the panel after the first successful
+  // click, not just whichever section triggered the re-render. Cache on
+  // window so a re-run script reuses the same handle instead of
+  // re-acquiring.
+  const vscode = window.__schemaInferenceVscodeApi || (window.__schemaInferenceVscodeApi = acquireVsCodeApi());
 
   function q(sel) { return document.querySelector(sel); }
 
@@ -417,6 +446,53 @@ export class TuningPanel {
         </td>
       </tr>`).join('')}
     </table>` : '<p class="hint">No candidates logged yet for this agent.</p>'}
+    `;
+  }
+
+  private renderLayer3(): string {
+    const l3 = this.layer3;
+    const eff = l3?.call_efficiency;
+    const marginal = l3?.marginal_value ?? [];
+    const under = l3?.under_triggering ?? [];
+    return `
+    <h2>Layer 3 -- Tool usage (report only)</h2>
+    <p class="hint">Uses the Source field above -- click Load to refresh. Report-only, no apply/accept action: any mandatory_tool_triggers entry suggested below is hand-added to agent_config.yml after review, same as Layer 0/2's never-auto-promote convention.</p>
+    ${!l3 ? '<p class="hint">Not loaded.</p>' : l3.rows === 0 ? `
+    <p class="hint">No tool_usage_history for "${escapeHtml(l3.source_name)}" yet -- run the agent pipeline (--agent) at least once, then Load again.</p>` : `
+    <p class="hint">${l3.rows} scored tool-call trace(s).</p>
+    ${eff ? `
+    <p>
+      max_tool_calls_per_column: ${eff.max_tool_calls_per_column}
+      | forced cutoff: ${eff.cutoff_count}/${eff.total} (${(eff.cutoff_pct * 100).toFixed(1)}%)
+      | duplicate calls: ${eff.duplicate_count}
+    </p>` : ''}
+    <h3>Per-tool marginal value</h3>
+    ${marginal.length ? `
+    <table>
+      <tr><th>Group</th><th>Tool</th><th>Called acc (n)</th><th>Not called acc (n)</th><th>Delta</th></tr>
+      ${marginal.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.group)}</td>
+        <td>${escapeHtml(r.tool)}</td>
+        <td>${r.called_acc.toFixed(2)} (${r.called_n})</td>
+        <td>${r.not_called_acc.toFixed(2)} (${r.not_called_n})</td>
+        <td>${r.delta >= 0 ? '+' : ''}${r.delta.toFixed(2)}</td>
+      </tr>`).join('')}
+    </table>` : '<p class="hint">Not enough grouped data yet.</p>'}
+    <h3>Under-triggering</h3>
+    ${under.length ? `
+    <table>
+      <tr><th>Group</th><th>Tool</th><th>Error rate without (n)</th><th>Error rate with (n)</th><th>Delta</th></tr>
+      ${under.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.group)}</td>
+        <td>${escapeHtml(r.tool)}</td>
+        <td>${r.error_rate_without.toFixed(2)} (${r.n_without})</td>
+        <td>${r.error_rate_with.toFixed(2)} (${r.n_with})</td>
+        <td>+${r.delta.toFixed(2)}</td>
+      </tr>`).join('')}
+    </table>` : '<p class="hint">No skip-vs-error correlation above threshold yet.</p>'}
+    `}
     `;
   }
 }

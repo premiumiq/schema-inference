@@ -128,6 +128,16 @@ mapper and agents key off of.
   `prompt_versions` (append-only), and only a human `--accept` call
   (`MetamodelStore.accept_prompt_version`) makes a candidate active — the
   tuning loop itself never self-promotes a prompt.
+- **Layer 3** (`analyze_tool_usage.py`): report-only, no `--apply` — joins
+  `tool_usage_history` (every `AgentToolCall` `MappingAgent` makes,
+  persisted by `orchestrator.run_mapping()`) against `mapping_history`'s
+  scored verdicts to surface per-tool marginal accuracy, call efficiency
+  (forced-cutoff rate, duplicate calls), and under-triggering candidates
+  for `mapping_agent.mandatory_tool_triggers` in `agent_config.yml` — a
+  scaffolded config key + loader that nothing gates on yet (see the
+  `TODO(MAP-9 follow-up)` in `mapping_agent.py`); any trigger a human adds
+  from this report today is still hand-edited, same never-auto-promote
+  convention as Layer 0/2.
 
 See `docs/self-tuning-mapper-agent-plan.md`, `docs/mapper-agent-roadmap.md`,
 and `docs/mapping-agent-batching-plan.md` for the design rationale behind

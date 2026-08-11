@@ -235,6 +235,28 @@ async function profileAndMapCurrentFile(): Promise<void> {
   if (!pipelinePick) return;
   const useAgent = pipelinePick.useAgent;
 
+  // --eval (score against ground truth) only means anything on the agent
+  // pipeline -- map_table's rule-only path never touches EvaluatorAgent.
+  // No UI path to this existed before (CLI-only: `map ... --agent --eval`).
+  let evalMode = false;
+  if (useAgent) {
+    const evalPick = await vscode.window.showQuickPick(
+      [
+        { label: 'No', detail: 'Skip scoring.', useEval: false },
+        {
+          label: 'Yes -- score against ground truth (--eval)',
+          detail:
+            'Needed for Layer 3\'s marginal-value / under-triggering report. Only pasl/pasm ' +
+            'ship a ground-truth catalog -- fails for any other source_name.',
+          useEval: true,
+        },
+      ],
+      { placeHolder: 'Score this run against ground truth?' },
+    );
+    if (!evalPick) return;
+    evalMode = evalPick.useEval;
+  }
+
   let client: BridgeClient;
   try {
     client = getBridge();
@@ -275,6 +297,7 @@ async function profileAndMapCurrentFile(): Promise<void> {
               profile_path: profileResult.profile_path,
               table_name: profileResult.table_name,
               agent: true,
+              eval: evalMode,
               output: proposalPath,
             });
           } finally {
@@ -378,6 +401,25 @@ async function profileSnowflakeTable(): Promise<void> {
   if (!pipelinePick) return;
   const useAgent = pipelinePick.useAgent;
 
+  let evalMode = false;
+  if (useAgent) {
+    const evalPick = await vscode.window.showQuickPick(
+      [
+        { label: 'No', detail: 'Skip scoring.', useEval: false },
+        {
+          label: 'Yes -- score against ground truth (--eval)',
+          detail:
+            'Needed for Layer 3\'s marginal-value / under-triggering report. Only pasl/pasm ' +
+            'ship a ground-truth catalog -- fails for any other source_name.',
+          useEval: true,
+        },
+      ],
+      { placeHolder: 'Score this run against ground truth?' },
+    );
+    if (!evalPick) return;
+    evalMode = evalPick.useEval;
+  }
+
   let client: BridgeClient;
   try {
     client = getBridge();
@@ -415,6 +457,7 @@ async function profileSnowflakeTable(): Promise<void> {
               profile_path: profileResult.profile_path,
               table_name: profileResult.table_name,
               agent: true,
+              eval: evalMode,
               output: proposalPath,
             });
           } finally {

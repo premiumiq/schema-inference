@@ -84,12 +84,24 @@ constraint:
 ## 4. Agent pipeline + progress
 
 18. Re-run **Profile & Map Current File** on `pasl_policy.dat` (this also
-    clears staleness) → pick **Agent pipeline**.
+    clears staleness) → pick **Agent pipeline** → a second prompt appears
+    ("Score this run against ground truth?") → pick **Yes**, since
+    `pasl_policy.dat`'s source name (`pasl`) has a ground-truth catalog.
+    (Picking **No** just skips scoring, same as before this prompt
+    existed — confirm that path still works too, on a separate run.)
 19. Watch the progress notification → confirm it updates through stages
     (rule pass → MappingAgent → CriticAgent → SQLAgent → row shape →
     finalizing), not a silent hang.
 20. If no `ANTHROPIC_API_KEY` is set: confirm the error shown is legible
     text, not a raw Python traceback.
+20b. Repeat step 18 on a source with **no** ground-truth catalog (e.g.
+    profile any file under a made-up source name), pick **Agent
+    pipeline** → **Yes** at the eval prompt → confirm a legible error
+    surfaces (not a raw traceback) and note that, today, the whole run's
+    result is discarded when this happens — the review panel never opens
+    even though mapping itself succeeded, since scoring failure aborts
+    the same request. Picking **No** for that source should complete
+    normally.
 
 ## 5. dbt scaffolding + diagnostics
 
@@ -147,6 +159,14 @@ constraint:
     **Accept** on an unaccepted candidate → confirm a **modal confirm**
     appears before anything happens; confirm it → candidate now shows an
     "accepted" badge and the active-prompt status updates.
+35. **Layer 3**: uses the same source field + **Load** button as Layer 0/1
+    (no separate control) — report-only, no apply/accept action. With no
+    prior `--agent` runs for the typed source, confirm it shows the
+    "no tool_usage_history yet" message rather than empty tables. After
+    running `map ... --agent --eval` at least once against that source
+    (§4), click **Load** again → confirm the trace count, call-efficiency
+    summary line, and (if any grouped data exists) the marginal-value /
+    under-triggering tables populate.
 
 ## 9. Installed-extension check (optional)
 
@@ -169,7 +189,9 @@ env vars (not just present in `.env` — see README's Requirements).
 
 38. `Ctrl+Shift+P` → **Schema Inference: Profile Snowflake Table** → enter
     a logical source name → enter a real `DATABASE.SCHEMA.TABLE` → pick
-    Rule-only or Agent pipeline.
+    Rule-only or Agent pipeline (picking Agent pipeline adds the same
+    "Score this run against ground truth?" prompt as §4 step 18 — pick No
+    unless the source name is `pasl`/`pasm`).
 39. Confirm profiling succeeds and the "N/M columns mapped" message
     appears.
 40. Confirm the review panel opens **directly** (no intermediate hover
