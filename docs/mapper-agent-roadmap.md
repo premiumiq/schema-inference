@@ -344,62 +344,45 @@ initial implementation land, so the UI design is informed by a real (if
 partial) multi-table dataset without blocking on exhaustive catalog work.
 
 ---
-### MAP-10: Cross-source column clustering
+---
 
-First piece of MAP-10 (roadmap entry included in this PR — there wasn't one).
+## Phase G — Unknown-target resolution
 
-Groups columns across sources that represent the same concept, with no canonical
-target to anchor against. This is the inverse of the mapping problem: equivalence
-has to be established column-to-column rather than against a known field.
+### MAP-10: Unknown-target schema synthesis
 
-## Scoring approach
+**Goal:** Given several source tables and *no* predefined canonical model,
+infer the target schema itself — which columns across sources represent the
+same concept, what the unified field should be, and how each source reconciles
+to it — then map every source into that synthesized target.
 
-No new ground truth was needed. PAS-L and PAS-M already map to a shared canonical
-model, so their catalogs encode the answer: any two columns from different sources
-sharing a non-null `canonical_target` should cluster together. Scored over pairs
-rather than clusters, which avoids having to judge partially-correct clusters.
+**Why:** Everything through MAP-7 assumes the target is known. Real onboarding
+often has no canonical model: a carrier acquires two books on different
+platforms, or a client has never had a unified model at all. Determining what
+the target *should be* is the work, and today it is entirely manual — the same
+column-by-column reverse-engineering MAP-1..5 automated, one level up.
 
-**F1 0.783 / precision 0.900 / recall 0.692** on PAS-L × PAS-M (13 scoreable pairs).
+**Distinct from MAP-6:** MAP-6 is a known target split across multiple source
+tables (join inference). MAP-10 is an unknown target across multiple sources
+(concept inference). Adjacent, not overlapping.
 
-## Design decision: shape gates, it doesn't vote
+**Scope:**
+- **Cross-source column clustering** — group columns representing the same
+  concept, with no target to anchor against. *This PR.*
+- **Agent pass over unmatched columns** — the deterministic ceiling (below) is
+  semantic, not tunable. Columns that string similarity cannot reconcile go to
+  an LLM with their profiles and sample values, same rules-then-reasoning
+  pattern as the mapper.
+- **Field synthesis** — per cluster, propose a `CanonicalField`: name,
+  target_type, aliases (the source names that clustered), and the per-source
+  transformation needed to reach it.
+- **Conflict surfacing** — clusters with no defensible unified type, or
+  concepts present in one source and absent in another, surface for human
+  resolution. Reuses the MAP-3 contested-mapping review pattern.
+- **Registry emission** — output a `list[CanonicalField]` registered via
+  `canonical/registry.py`'s existing `register_dynamic_schema()`, so a
+  synthesized target drives `map_table()`/`run_mapping()` unchanged.
 
-The first version scored profile shape (type, cardinality, null rate) as a
-weighted term alongside name and value signals. It clustered `INS_ADDR` with
-`insured_ein` — an address and a tax ID — because they looked structurally
-similar. Shape isn't semantic evidence: two string columns of similar cardinality
-are indistinguishable whether they hold addresses or tax IDs.
-
-Restructured so `score = semantic × gate`, where the gate is a 0–1 multiplier
-that can only reduce a score, never create one. Precision went from producing
-garbage to 1.000.
-
-## Abbreviation expansion
-
-Raw string comparison scored `EFF_DT`, `EXP_DT`, and `POL_NO` at an identical
-0.667 against their true counterparts — a signal that can't distinguish a real
-match from a shared prefix. Expanding known abbreviations before comparison
-(`EFF_DT` → "effective date") lifted recall from 0.538 to 0.692.
-
-## Tried and rejected
-
-A token-coverage penalty, intended to stop `TERM_EFF_DT` ("termination effective
-date") from outscoring `EFF_DT` against `effective_date` on token containment.
-It fixed that pair and cost three others — `COV_A_LIM`, `PRIOR_CARR_CD`,
-`WINBK_FLG` all have legitimately asymmetric token sets. F1 dropped to 0.667.
-Reverted.
-
-## The remaining four failures are the case for the agent pass
-
-- `ANNU_PREM_AMT` ↔ `written_premium` and `COV_A_DED` ↔ `policy_deductible`
-  need domain semantics; no string metric reaches them at any threshold.
-- `EFF_DT` losing to `TERM_EFF_DT` is a real limitation of token-based scoring,
-  and the attempt above shows it can't be tuned away without costing more.
-- `POL_NO` → `policy_number` instead of `policy_id` is arguably not an error —
-  those targets share aliases and `policy_id` declares `secondary_target:
-  policy_number`. It's the unknown-target version of a contested mapping.
-
-The deterministic layer has hit its ceiling, measured rather than asserted. The
-agent pass is the next piece.
+**Depends on:** MAP-4.1 ✅ — `register_dynamic_schema()` is the output interface.
 
 ## Open design gaps
 
