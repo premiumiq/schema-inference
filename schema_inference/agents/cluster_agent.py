@@ -96,6 +96,7 @@ class AgentMatch:
     source_b: str
     column_b: str
     confidence: float
+    agreement: str
     reasoning: str
 
     def as_pair(self) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -140,6 +141,8 @@ def match_unclustered(
     source_b: str,
     columns_b: list[ColumnProfile],
     min_confidence: float = MIN_AGENT_CONFIDENCE,
+    votes: int = 5,
+    vote_threshold: float = 0.8,
 ) -> list[AgentMatch]:
     """Ask the model which leftover columns represent the same concept.
 
@@ -157,7 +160,7 @@ def match_unclustered(
     }
 
     provider = get_provider("cluster_agent")
-    response = call_with_retry(provider, dict(
+    request = dict(
         model=_model(),
         max_tokens=2048,
         system=[{
@@ -172,43 +175,65 @@ def match_unclustered(
                 + json.dumps(payload, indent=2)
             ),
         }],
-    ))
-
-    data = _extract_json(response.text)
-    if not data:
-        return []
+    )
 
     valid_a = {c.name for c in columns_a}
     valid_b = {c.name for c in columns_b}
+
+    # Vote across repeated runs. The model is not randomly jittering - it is
+    # genuinely uncertain, and it shows: written_premium was claimed by
+    # MNTHLY_PREM_AMT in 3/5 runs and by ANNU_PREM_AMT in 2/5. A pair the model
+    # only proposes some of the time is one it does not actually know, so
+    # inconsistency is treated as the abstain signal rather than smoothed over.
+    tally: dict[tuple[str, str], list[tuple[float, str]]] = {}
+    for _ in range(votes):
+        data = _extract_json(call_with_retry(provider, request).text)
+        if not data:
+            continue
+        seen: set[tuple[str, str]] = set()
+        for m in (data.get("matches") or []):
+            a, b = m.get("a"), m.get("b")
+            if a not in valid_a or b not in valid_b:
+                continue  # hallucinated column name
+            key = (a, b)
+            if key in seen:
+                continue  # one vote per pair per run
+            seen.add(key)
+            tally.setdefault(key, []).append((
+                float(m.get("confidence") or 0.0),
+                str(m.get("reasoning") or "").strip(),
+            ))
+
+    required = max(1, int(votes * vote_threshold))
+    survivors = [
+        (key, entries) for key, entries in tally.items()
+        if len(entries) >= required
+    ]
+    # Strongest first, so a double-assignment resolves in favour of the pair the
+    # model was most consistently confident about.
+    survivors.sort(
+        key=lambda kv: (len(kv[1]), sum(c for c, _ in kv[1]) / len(kv[1])),
+        reverse=True,
+    )
+
     claimed_a: set[str] = set()
     claimed_b: set[str] = set()
     matches: list[AgentMatch] = []
 
-    # Highest confidence first, so if the model double-assigns despite the
-    # instruction, the stronger claim wins rather than whichever came first.
-    raw_matches = data.get("matches") or []
-    raw_matches.sort(key=lambda m: float(m.get("confidence") or 0.0), reverse=True)
-
-    for m in raw_matches:
-        a, b = m.get("a"), m.get("b")
-        conf = float(m.get("confidence") or 0.0)
-
-        # Reject hallucinated names outright rather than trying to fuzzy-match
-        # them back to a real column.
-        if a not in valid_a or b not in valid_b:
-            continue
-        if conf < min_confidence:
+    for (a, b), entries in survivors:
+        mean_conf = sum(c for c, _ in entries) / len(entries)
+        if mean_conf < min_confidence:
             continue
         if a in claimed_a or b in claimed_b:
             continue
-
         claimed_a.add(a)
         claimed_b.add(b)
         matches.append(AgentMatch(
             source_a=source_a, column_a=a,
             source_b=source_b, column_b=b,
-            confidence=round(conf, 3),
-            reasoning=str(m.get("reasoning") or "").strip(),
+            confidence=round(mean_conf, 3),
+            agreement=f"{len(entries)}/{votes}",
+            reasoning=entries[0][1],
         ))
 
     return matches
