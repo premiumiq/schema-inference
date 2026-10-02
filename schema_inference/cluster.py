@@ -135,7 +135,7 @@ def _value_overlap(a: ColumnProfile, b: ColumnProfile) -> tuple[float, bool]:
 _ABBREVIATIONS: dict[str, str] = {
     # identifiers
     "no": "number", "num": "number", "nbr": "number", "id": "identifier",
-    "cd": "code", "seq": "sequence", "ref": "reference", "key": "key",
+    "cd": "code", "seq": "sequence", "ref": "reference",
     # dates
     "dt": "date", "eff": "effective", "exp": "expiration", "term": "termination",
     "ts": "timestamp", "yr": "year", "mo": "month",
@@ -150,7 +150,7 @@ _ABBREVIATIONS: dict[str, str] = {
     "scr": "score", "addl": "additional", "rel": "relationship",
     "winbk": "win back", "flg": "flag", "lob": "line of business",
     # party / location
-    "nm": "name", "addr": "address", "st": "state", "zip": "zip",
+    "nm": "name", "addr": "address", "st": "state",
     "cust": "customer", "acct": "account", "dist": "distribution",
 }
 
@@ -262,7 +262,7 @@ def score_pair(
         return 0.0, []
 
     gate = _profile_gate(a, b, rows_a, rows_b)
-    if gate < 0.99:
+    if round(gate, 2) < 1.0:
         evidence.append(f"shape gate {gate:.2f}")
 
     return semantic * gate, evidence
@@ -276,11 +276,19 @@ def cluster_columns(
 ) -> list[ColumnCluster]:
     """Group columns across sources into same-concept clusters.
 
-    Greedy agglomeration over cross-source pairs in descending score order. A
-    column joins a cluster only if it beats the threshold against every existing
-    member and no column from its own source is already there, so a strong pair
-    cannot drag a weak third column in behind it.
+    Candidate pairs are first filtered to mutual best matches per source pair,
+    then agglomerated greedily in descending score order. A column joins a
+    cluster only if it beats the threshold against every existing member and no
+    column from its own source is already there, so a strong pair cannot drag a
+    weak third column in behind it.
+
+    Each entry in ``tables`` is (source_name, table). source_name is the
+    one-column-per-cluster unit, so it must be unique across entries.
     """
+    labels = [source_name for source_name, _ in tables]
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"duplicate source names in cluster input: {labels}")
+
     members: list[ClusterMember] = []
     row_counts: dict[str, int] = {}
     for source_name, table in tables:
@@ -304,21 +312,31 @@ def cluster_columns(
     scored.sort(key=lambda s: s[0], reverse=True)
 
     # Mutual best match: a pair survives only if each column is the other's
-    # best available partner in the other source. Without this, a globally
+    # best available partner in the other column's source. Without this, a
     # high-scoring pair can claim a column that another column matches better
-    # and is now locked out of - TERM_EFF_DT ("termination effective date")
-    # outscores EFF_DT against effective_date on token overlap alone, taking
-    # the slot EFF_DT genuinely belongs in.
-    best_for: dict[int, tuple[float, int]] = {}
+    # and is now locked out of.
+    #
+    # Best is tracked per (column, other source), not per column: with three or
+    # more sources a column has a legitimate best partner in EACH other source,
+    # and a single global best would filter out every pair but one, so no
+    # cluster could ever grow past two members.
+    #
+    # Known limit: this only arbitrates between candidates on score. On the
+    # PAS-L x PAS-M sample, TERM_EFF_DT still outscores EFF_DT against
+    # effective_date (both names reach 1.00 on token_set_ratio; the shape gate
+    # then favours TERM_EFF_DT), so it takes the slot EFF_DT belongs in.
+    best_for: dict[tuple[int, str], tuple[float, int]] = {}
     for score, i, j, _ev in scored:
-        if score > best_for.get(i, (0.0, -1))[0]:
-            best_for[i] = (score, j)
-        if score > best_for.get(j, (0.0, -1))[0]:
-            best_for[j] = (score, i)
+        si, sj = members[i].source_name, members[j].source_name
+        if score > best_for.get((i, sj), (0.0, -1))[0]:
+            best_for[(i, sj)] = (score, j)
+        if score > best_for.get((j, si), (0.0, -1))[0]:
+            best_for[(j, si)] = (score, i)
 
     scored = [
         (s, i, j, ev) for s, i, j, ev in scored
-        if best_for.get(i, (0.0, -1))[1] == j and best_for.get(j, (0.0, -1))[1] == i
+        if best_for[(i, members[j].source_name)][1] == j
+        and best_for[(j, members[i].source_name)][1] == i
     ]
 
     cluster_of: dict[int, ColumnCluster] = {}

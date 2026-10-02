@@ -6,6 +6,7 @@ Usage:
     python -m schema_inference review   <proposal_json> [options]
     python -m schema_inference infer    <file> --source-name NAME [options]
     python -m schema_inference track    <file> --source-name NAME [options]
+    python -m schema_inference cluster  <profile_json> <profile_json> ... [options]
 """
 
 from __future__ import annotations
@@ -262,9 +263,73 @@ def _cmd_track(args: argparse.Namespace) -> None:
             print(f"\nNew columns — run 'infer' to map: {report.new_columns_for_mapping}")
 
 
+def _cmd_cluster(args: argparse.Namespace) -> None:
+    from .cluster import CLUSTER_THRESHOLD, cluster_columns
+    from .models import SchemaProfile
+
+    if len(args.profiles) < 2:
+        sys.exit("Error: cluster needs at least two profiles (one per source)")
+
+    tables = []
+    for path_str in args.profiles:
+        path = Path(path_str)
+        if not path.exists():
+            sys.exit(f"Error: profile not found: {path}")
+        profile = SchemaProfile.model_validate_json(path.read_text(encoding="utf-8"))
+        if len(profile.tables) != 1:
+            sys.exit(f"Error: {path} has {len(profile.tables)} tables; cluster expects one per profile")
+        tables.append((profile.source_name, profile.tables[0]))
+
+    sources = [s for s, _ in tables]
+    if len(set(sources)) != len(sources):
+        sys.exit(f"Error: each profile must come from a distinct source, got {sources}")
+
+    threshold = args.threshold if args.threshold is not None else CLUSTER_THRESHOLD
+    clusters = cluster_columns(tables, threshold=threshold)
+    multi = [c for c in clusters if len(c.members) > 1]
+
+    print(f"Clustered {sum(len(t.columns) for _, t in tables)} columns across "
+          f"{len(tables)} sources → {len(multi)} cross-source clusters, "
+          f"{len(clusters) - len(multi)} single-source")
+    for c in multi:
+        print(f"  {c.confidence:.3f}  {'  <->  '.join(c.column_names())}   [{'; '.join(c.evidence)}]")
+
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = [
+            {
+                "members": [
+                    {"source_name": m.source_name, "table_name": m.table_name, "column": m.column.name}
+                    for m in c.members
+                ],
+                "confidence": c.confidence,
+                "evidence": c.evidence,
+            }
+            for c in clusters
+        ]
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"Clusters saved → {out}")
+
+    if args.eval:
+        from .cluster_score import load_targets, print_score, score_clusters
+
+        targets = {source: load_targets(source) for source in sources}
+        print()
+        print_score(score_clusters(clusters, targets))
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Windows consoles default to cp1252, which can't encode the arrows and
+    # box-drawing characters the commands print.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(
         prog="schema_inference",
         description=f"PremiumIQ Schema Inference Tool v{VERSION}",
@@ -317,6 +382,16 @@ def main() -> None:
     p_track.add_argument("--force-accept-breaking", action="store_true",
                          help="Record new version even when breaking changes exist")
 
+    # ── cluster ──
+    p_cluster = sub.add_parser(
+        "cluster", help="Group same-concept columns across sources, no canonical target (MAP-10)")
+    p_cluster.add_argument("profiles", nargs="+", help="SchemaProfile JSON files, one per source")
+    p_cluster.add_argument("--threshold", type=float, default=None,
+                           help="Minimum pair score to share a cluster (default: cluster.CLUSTER_THRESHOLD)")
+    p_cluster.add_argument("--output", default=None, help="Write clusters as JSON to this path")
+    p_cluster.add_argument("--eval", action="store_true",
+                           help="Score pairwise against each source's ground truth catalog")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -325,6 +400,7 @@ def main() -> None:
         "review": _cmd_review,
         "infer": _cmd_infer,
         "track": _cmd_track,
+        "cluster": _cmd_cluster,
     }
     dispatch[args.command](args)
 

@@ -36,6 +36,16 @@ jobs:
             schema_inference/registry/pasl/proposal_pasl_snowflake.json \
             --source-name pasl
 
+      - name: Cross-source clustering smoke test (MAP-10, PAS-L x PAS-M)
+        run: |
+          python -m schema_inference profile \
+            examples/insurance/test_data/pasm_policy.dat \
+            --source-name pasm
+          python -m schema_inference cluster \
+            schema_inference/registry/pasl/profile_pasl_policy.json \
+            schema_inference/registry/pasm/profile_pasm_policy.json \
+            --eval
+
       - name: Layer 0 tune dry-run (PAS-L)
         run: |
           python tools/tune_rule_weights.py \

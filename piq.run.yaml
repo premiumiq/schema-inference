@@ -1,0 +1,25 @@
+# piq.run.yaml — how to run and verify this project.
+# Read by /piq-core:verify to pick a runner, and by the piq-core commit hook,
+# which runs start.command from the repo root via cmd.exe (hence the
+# backslashed venv path and no `cd`). Without this file the hook falls back to
+# bare `pytest`, which isn't on PATH outside an activated venv.
+#
+# Keep the command's last character unquoted: the hook's scalar reader strips
+# a trailing quote, which would break `-m "not snowflake"` if it came last.
+# Same marker filter as CI (.github/workflows/ci.yml).
+
+start:
+  command: .venv\Scripts\python.exe -m pytest -m "not snowflake" tests -q
+  workingDir: "."
+  env: ".env.example"           # path to a template env file; never a real one
+
+healthCheck:
+  kind: "command"               # one of: http | port | process | command
+  command: .venv\Scripts\python.exe -m pytest -m "not snowflake" tests -q
+  timeoutSeconds: 300
+
+testData:
+  fixturePath: "examples/insurance/test_data"   # synthetic .dat files from the insurance_data_ecosystem generator — no client data
+  description: "Committed synthetic PAS-L / PAS-M .dat fixtures (12-row CI tier, 69/49-row sample tier) plus ground truth catalogs in examples/insurance/ground_truth."
+
+artifactType: "cli"   # one of: web | api | dbt | cli — tells /piq-core:verify which runner to pick
