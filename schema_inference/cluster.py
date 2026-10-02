@@ -181,6 +181,13 @@ def _name_similarity(a: str, b: str) -> float:
 
 # ── Profile gate ─────────────────────────────────────────────────────────────
 
+def _types_compatible(ta: str, tb: str) -> bool:
+    """Kinship in either direction. _TYPE_KIN rows are not mirror images
+    (date accepts string, string does not list date), so a one-way lookup
+    would make the score - and the clusters - depend on source order."""
+    return tb in _TYPE_KIN.get(ta, {ta}) or ta in _TYPE_KIN.get(tb, {tb})
+
+
 def _profile_gate(
     a: ColumnProfile, b: ColumnProfile, rows_a: int, rows_b: int
 ) -> float:
@@ -190,9 +197,10 @@ def _profile_gate(
     columns pass through unchanged and incompatible ones collapse.
     """
     gate = 1.0
+    type_compatible = _types_compatible(a.inferred_type, b.inferred_type)
 
     # Unrelated types are close to disqualifying.
-    if b.inferred_type not in _TYPE_KIN.get(a.inferred_type, {a.inferred_type}):
+    if not type_compatible:
         gate *= 0.25
     elif a.inferred_type != b.inferred_type:
         gate *= 0.85  # kin but not identical - mild penalty
@@ -217,7 +225,6 @@ def _profile_gate(
     # Floor the gate for type-compatible pairs. Compounding three or four mild
     # penalties punishes ordinary cross-system variation (integer vs string ids,
     # different row counts) as harshly as genuine incompatibility.
-    type_compatible = b.inferred_type in _TYPE_KIN.get(a.inferred_type, {a.inferred_type})
     floor = 0.72 if type_compatible else 0.0
     return max(gate, floor)
 
@@ -247,8 +254,12 @@ def score_pair(
 
     if overlap_applies and overlap > 0.0:
         # Vocabulary evidence available: lead with it, let a strong name
-        # corroborate but not dominate.
+        # corroborate but not dominate. A thin overlap (value_distribution is
+        # only the top 5 values) must not sink a pair the name alone would
+        # carry, so never score below the name-only branch.
         semantic = 0.75 * overlap + 0.25 * name
+        if name >= NAME_FLOOR:
+            semantic = max(semantic, 0.85 * name)
         evidence.append(f"value overlap {overlap:.2f}")
         if name >= NAME_FLOOR:
             evidence.append(f"name {name:.2f}")
@@ -285,6 +296,8 @@ def cluster_columns(
     Each entry in ``tables`` is (source_name, table). source_name is the
     one-column-per-cluster unit, so it must be unique across entries.
     """
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError(f"threshold must be in (0, 1], got {threshold}")
     labels = [source_name for source_name, _ in tables]
     if len(set(labels)) != len(labels):
         raise ValueError(f"duplicate source names in cluster input: {labels}")
@@ -335,25 +348,30 @@ def cluster_columns(
 
     scored = [
         (s, i, j, ev) for s, i, j, ev in scored
-        if best_for[(i, members[j].source_name)][1] == j
-        and best_for[(j, members[i].source_name)][1] == i
+        if best_for.get((i, members[j].source_name), (0.0, -1))[1] == j
+        and best_for.get((j, members[i].source_name), (0.0, -1))[1] == i
     ]
 
     cluster_of: dict[int, ColumnCluster] = {}
     clusters: list[ColumnCluster] = []
 
-    def _fits(cluster: ColumnCluster, idx: int) -> bool:
+    def _fits(cluster: ColumnCluster, idx: int) -> float | None:
+        """Weakest score between the candidate and every member, or None if
+        the candidate's source is already represented or any pair is below
+        threshold."""
         cand = members[idx]
         if cand.source_name in cluster.sources:
-            return False
+            return None
+        weakest = 1.0
         for m in cluster.members:
             s, _ = score_pair(
                 m.column, cand.column,
                 row_counts[m.source_name], row_counts[cand.source_name],
             )
             if s < threshold:
-                return False
-        return True
+                return None
+            weakest = min(weakest, s)
+        return weakest
 
     for score, i, j, evidence in scored:
         ci, cj = cluster_of.get(i), cluster_of.get(j)
@@ -367,15 +385,17 @@ def cluster_columns(
             clusters.append(cluster)
             cluster_of[i] = cluster_of[j] = cluster
         elif ci is not None and cj is None:
-            if _fits(ci, j):
+            weakest = _fits(ci, j)
+            if weakest is not None:
                 ci.members.append(members[j])
                 cluster_of[j] = ci
-                ci.confidence = round(min(ci.confidence, score), 3)
+                ci.confidence = round(min(ci.confidence, weakest), 3)
         elif ci is None and cj is not None:
-            if _fits(cj, i):
+            weakest = _fits(cj, i)
+            if weakest is not None:
                 cj.members.append(members[i])
                 cluster_of[i] = cj
-                cj.confidence = round(min(cj.confidence, score), 3)
+                cj.confidence = round(min(cj.confidence, weakest), 3)
         # Both already clustered: leave them. Merging two established clusters
         # on one cross pair is how unrelated concepts get chained together.
 

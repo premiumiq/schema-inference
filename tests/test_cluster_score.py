@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from schema_inference.cluster import ClusterMember, ColumnCluster, cluster_columns
-from schema_inference.cluster_score import load_targets, score_clusters
+from schema_inference.cluster_score import load_secondary_targets, load_targets, score_clusters
 from schema_inference.models import ColumnProfile
 from schema_inference.profiler import profile_file
 
@@ -73,9 +73,32 @@ def test_load_targets_keeps_null_target_columns():
     assert "TERM_EFF_DT" in targets and targets["TERM_EFF_DT"] is None
 
 
-def test_pasl_pasm_sample_baseline(tmp_path):
+def test_pair_joined_through_secondary_target_is_not_a_false_positive():
+    """POL_NO's primary is policy_id but its catalog secondary_target is
+    policy_number: clustering it with b.policy_number is defensible, so it is
+    reported separately instead of counted against precision. The primary
+    partner is still missed."""
+    targets = {"a": {"POL_NO": "policy_id"},
+               "b": {"policy_id": "policy_id", "policy_number": "policy_number"}}
+    secondary = {"a": {"POL_NO": "policy_number"}}
+    s = score_clusters([_cluster("a.POL_NO", "b.policy_number")], targets, secondary)
+    assert s.false_positives == 0
+    assert s.secondary_pairs == [("a.POL_NO", "b.policy_number")]
+    assert s.fn_pairs == [("a.POL_NO", "b.policy_id")]
+
+    # Without secondary info it stays a plain FP.
+    assert score_clusters([_cluster("a.POL_NO", "b.policy_number")], targets).false_positives == 1
+
+
+def test_catalog_lookup_rejects_path_like_source_names():
+    with pytest.raises(ValueError, match="invalid source name"):
+        load_targets("../../etc/x")
+
+
+def test_pasl_pasm_sample_baseline():
     """Regression floor for the deterministic layer on PAS-L x PAS-M sample
-    data. Baseline at the time of writing: P 0.818 / R 0.692 / F1 0.750 —
+    data (secondary_target-aware). Baseline at the time of writing:
+    P 0.900 / R 0.692 / F1 0.783 —
     raise these floors when the clustering improves, never lower them to
     make a change pass."""
     tables = []
@@ -84,8 +107,15 @@ def test_pasl_pasm_sample_baseline(tmp_path):
         tables.append((source, profile.tables[0]))
 
     clusters = cluster_columns(tables)
-    s = score_clusters(clusters, {src: load_targets(src) for src, _ in tables})
+    s = score_clusters(
+        clusters,
+        {src: load_targets(src) for src, _ in tables},
+        {src: load_secondary_targets(src) for src, _ in tables},
+    )
+    reversed_clusters = cluster_columns(list(reversed(tables)))
+    assert {frozenset(c.column_names()) for c in clusters} == \
+        {frozenset(c.column_names()) for c in reversed_clusters}
 
-    assert s.precision >= 0.81
+    assert s.precision >= 0.89
     assert s.recall >= 0.69
-    assert s.f1 >= 0.75
+    assert s.f1 >= 0.78

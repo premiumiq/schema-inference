@@ -285,6 +285,8 @@ def _cmd_cluster(args: argparse.Namespace) -> None:
         sys.exit(f"Error: each profile must come from a distinct source, got {sources}")
 
     threshold = args.threshold if args.threshold is not None else CLUSTER_THRESHOLD
+    if not 0.0 < threshold <= 1.0:
+        sys.exit(f"Error: --threshold must be in (0, 1], got {threshold}")
     clusters = cluster_columns(tables, threshold=threshold)
     multi = [c for c in clusters if len(c.members) > 1]
 
@@ -312,11 +314,19 @@ def _cmd_cluster(args: argparse.Namespace) -> None:
         print(f"Clusters saved → {out}")
 
     if args.eval:
-        from .cluster_score import load_targets, print_score, score_clusters
+        from .cluster_score import (
+            GROUND_TRUTH_DIR, load_secondary_targets, load_targets, print_score, score_clusters,
+        )
 
-        targets = {source: load_targets(source) for source in sources}
+        try:
+            targets = {source: load_targets(source) for source in sources}
+            secondary = {source: load_secondary_targets(source) for source in sources}
+        except FileNotFoundError as e:
+            sys.exit(f"Error: no ground truth catalog in {GROUND_TRUTH_DIR} ({e.filename})")
+        except ValueError as e:
+            sys.exit(f"Error: {e}")
         print()
-        print_score(score_clusters(clusters, targets))
+        print_score(score_clusters(clusters, targets, secondary))
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

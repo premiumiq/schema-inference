@@ -371,14 +371,18 @@ tables (join inference). MAP-10 is an unknown target across multiple sources
   match per source pair, at most one column per source per cluster),
   `schema_inference/cluster_score.py` (pairwise P/R against the existing
   catalogs: a targeted column clustered with a null-target one is a false
-  positive; two null-target columns are reported as *unscored*, not hidden),
-  CLI `python -m schema_inference cluster <profile>... --eval`.
-  Baseline on PAS-L × PAS-M sample: **P 0.818 / R 0.692 / F1 0.750** (13
+  positive; two null-target columns are reported as *unscored*, not hidden;
+  a pair joined only through a catalog `secondary_target` is reported
+  separately and counted as neither TP nor FP), CLI
+  `python -m schema_inference cluster <profile>... --eval`. Results are
+  independent of source order (type kinship is checked both ways).
+  Baseline on PAS-L × PAS-M sample: **P 0.900 / R 0.692 / F1 0.783** (13
   truth pairs), pinned as a floor in `tests/test_cluster_score.py`. The
   remaining errors: `TERM_EFF_DT` takes `effective_date` from `EFF_DT`
   (names tie at 1.00 on token-set, the shape gate breaks the tie the wrong
-  way); `POL_NO` → `policy_number` rather than `policy_id` (shared aliases,
-  the unknown-target form of a contested mapping); `ANNU_PREM_AMT` ↔
+  way, the one FP); `POL_NO` pairs with `policy_number` (its
+  `secondary_target`, so not counted against precision) and so misses
+  `policy_id`, the unknown-target form of a contested mapping; `ANNU_PREM_AMT` ↔
   `written_premium` and `COV_A_DED` ↔ `policy_deductible` need domain
   semantics no string metric reaches. Four unscored clusters include one
   clear miss (`INS_ADDR` ↔ `insured_ein`, joined on the shared "insured"

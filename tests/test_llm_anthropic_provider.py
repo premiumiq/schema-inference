@@ -1,7 +1,7 @@
 import anthropic
 try:  # anthropic>=1.0 ships on httpx2; older releases on httpx
     import httpx2 as httpx
-except ImportError:  # pragma: no cover
+except ImportError:
     import httpx
 import pytest
 

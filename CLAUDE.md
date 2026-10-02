@@ -130,7 +130,8 @@ abbreviation-expanded name similarity is the only evidence; profile shape is a
 matches per source pair; a cluster holds at most one column per source.
 `cluster_score.py` scores pairwise against the existing catalogs (shared
 non-null `canonical_target` = should cluster; targeted × null-target = false
-positive; null × null = reported as unscored). Baseline floor pinned in
+positive; null × null = reported as unscored; joined only via a
+`secondary_target` = reported separately, neither TP nor FP). Baseline floor pinned in
 `tests/test_cluster_score.py` — raise it, don't lower it.
 
 ### Self-tuning layers (`tools/`)

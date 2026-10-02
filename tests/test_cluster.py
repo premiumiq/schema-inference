@@ -106,17 +106,60 @@ def test_same_source_columns_never_cluster_together():
         assert len(c.sources) == len(c.members)
 
 
-def test_mutual_best_match_locks_out_weaker_candidate():
-    """Two source-a columns both match b.risk_score; only the stronger one
-    pairs, the other is left as a singleton rather than chained in."""
+def test_mutual_best_match_stops_a_column_claiming_its_second_choice(monkeypatch):
+    """Scores: a2-b1 0.90, a1-b1 0.88, a1-b2 0.85.
+
+    Greedy alone pairs a2-b1, then (a1 locked out of b1) falls through to
+    a1-b2 - a match a1 ranks second. Mutual best keeps only a2-b1: a1's best
+    in b is b1, not b2, so a1-b2 is dropped and a1/b2 stay singletons. This
+    fails if the mutual-best filter is removed."""
+    import schema_inference.cluster as cluster_mod
+
+    fixed = {
+        frozenset({"a1", "b1"}): 0.88,
+        frozenset({"a1", "b2"}): 0.85,
+        frozenset({"a2", "b1"}): 0.90,
+    }
+    monkeypatch.setattr(
+        cluster_mod, "score_pair",
+        lambda a, b, ra, rb: (fixed.get(frozenset({a.name, b.name}), 0.0), []),
+    )
     clusters = cluster_columns([
-        ("a", _table("t_a", [
-            _col("RSK_SCR", "decimal", distinct=10),
-            _col("RSK_SCR_ADJ", "decimal", distinct=2, null_rate=0.8),
-        ])),
-        ("b", _table("t_b", [_col("risk_score", "decimal", distinct=10)])),
+        ("a", _table("t_a", [_col("a1"), _col("a2")])),
+        ("b", _table("t_b", [_col("b1"), _col("b2")])),
     ])
-    assert _pairs(clusters) == {frozenset({"a.RSK_SCR", "b.risk_score"})}
+    assert _pairs(clusters) == {frozenset({"a.a2", "b.b1"})}
+
+
+def test_score_and_clusters_independent_of_source_order():
+    """Regression: _TYPE_KIN was looked up one way only (date lists string,
+    string does not list date), so a date x string pair scored 0.85-gated
+    one way and 0.25-gated the other, and swapping the profiles on the
+    command line changed the clusters."""
+    a = _col("EFF_DT", "date", distinct=10)
+    b = _col("effective_date", "string", distinct=10)
+    assert score_pair(a, b, 10, 10) == score_pair(b, a, 10, 10)
+
+    ta = ("a", _table("t_a", [a, _col("RSK_SCR", "decimal")]))
+    tb = ("b", _table("t_b", [b, _col("risk_score", "decimal")]))
+    assert _pairs(cluster_columns([ta, tb])) == _pairs(cluster_columns([tb, ta]))
+    assert frozenset({"a.EFF_DT", "b.effective_date"}) in _pairs(cluster_columns([ta, tb]))
+
+
+def test_thin_value_overlap_does_not_sink_a_strong_name_match():
+    a = _col("CNCL_RSN_CD", values={"NP": 1, "UW": 1, "IR": 1, "OT": 1, "MV": 1}, is_coded_column=True)
+    b = _col("cancellation_reason", values={"NP": 1, "XX": 1, "YY": 1, "ZZ": 1, "QQ": 1}, is_coded_column=True)
+    score, evidence = score_pair(a, b, 10, 10)
+    assert evidence[0].startswith("value overlap")
+    assert score >= 0.85 * 0.72  # never below the name-only branch at the gate floor
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5])
+def test_threshold_out_of_range_rejected(bad):
+    t = ("a", _table("t_a", [_col("x")]))
+    u = ("b", _table("t_b", [_col("y")]))
+    with pytest.raises(ValueError, match="threshold"):
+        cluster_columns([t, u], threshold=bad)
 
 
 def test_three_sources_form_a_single_cluster():
