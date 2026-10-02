@@ -51,6 +51,12 @@ python -m schema_inference map schema_inference/registry/pasl/profile_pasl_polic
 python scripts/score_mappings.py schema_inference/registry/pasl/proposal_pasl_snowflake.json \
   --source-name pasl
 
+# MAP-10: cluster same-concept columns across sources (no canonical target),
+# scored pairwise against each source's ground truth catalog
+python -m schema_inference profile examples/insurance/test_data/pasm_policy_sample.dat --source-name pasm
+python -m schema_inference cluster schema_inference/registry/pasl/profile_pasl_policy_sample.json \
+  schema_inference/registry/pasm/profile_pasm_policy_sample.json --eval
+
 # Layer 0: rule-weight grid search (no API key)
 python tools/tune_rule_weights.py --source-name pasl
 
@@ -114,6 +120,19 @@ mapper and agents key off of.
   `slv_policy` silver-table columns in the (separate) warehouse repo. Adding
   aliases here is the primary lever for rule-pass recall; do not add new
   canonical fields without a corresponding warehouse-side column.
+
+### Cross-source clustering (MAP-10, `cluster` subcommand)
+`cluster.py` groups columns across two or more source profiles that mean the
+same thing, with **no** canonical target — first step toward synthesizing a
+target schema. `score = semantic × gate`: value overlap (coded columns) or
+abbreviation-expanded name similarity is the only evidence; profile shape is a
+0–1 gate that can veto but never create a match. Pairs must be mutual best
+matches per source pair; a cluster holds at most one column per source.
+`cluster_score.py` scores pairwise against the existing catalogs (shared
+non-null `canonical_target` = should cluster; targeted × null-target = false
+positive; null × null = reported as unscored; joined only via a
+`secondary_target` = reported separately, neither TP nor FP). Baseline floor pinned in
+`tests/test_cluster_score.py` — raise it, don't lower it.
 
 ### Self-tuning layers (`tools/`)
 - **Layer 0** (`tune_rule_weights.py`): grid-searches `mapper.py`'s three rule

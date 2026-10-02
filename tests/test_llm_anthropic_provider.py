@@ -1,5 +1,8 @@
 import anthropic
-import httpx
+try:  # anthropic>=1.0 ships on httpx2; older releases on httpx
+    import httpx2 as httpx
+except ImportError:
+    import httpx
 import pytest
 
 import schema_inference.llm.registry as registry

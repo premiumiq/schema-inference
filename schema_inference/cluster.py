@@ -1,0 +1,411 @@
+"""Cross-source column clustering (MAP-10, step 1).
+
+Given profiles from two or more sources and NO canonical target to anchor
+against, group columns that represent the same underlying concept.
+
+This is the inverse of the mapping problem: there is no target field to match
+each column to, so equivalence has to be established directly, column-to-column,
+across sources.
+
+Scoring is deliberately NOT a weighted sum of every available signal. Shape
+agreement - matching types, similar cardinality, similar null rates - is not
+semantic evidence. Two string columns of similar cardinality look identical
+whether they hold street addresses or tax IDs, so letting shape contribute to
+the score lets it manufacture matches on its own. It did, in the first version:
+INS_ADDR clustered with insured_ein on shape alone.
+
+So the score is:
+
+    score = semantic_signal * profile_gate
+
+  semantic_signal  what the column actually contains or is called. Value overlap
+                   when the columns have a comparable vocabulary (strongest -
+                   two coded columns sharing values is near-proof), name
+                   similarity otherwise (weakest and actively misleading -
+                   WRTG_AGT is the standing reminder that a name can point
+                   confidently at the wrong concept).
+
+  profile_gate     a 0-1 multiplier that can only ever REDUCE a score. Wildly
+                   incompatible shapes collapse it toward zero; compatible ones
+                   leave the semantic signal intact. It vetoes, it never votes.
+
+Clusters hold at most one column per source: a source's own two columns are
+different concepts by construction, not candidates for merging.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from rapidfuzz import fuzz
+
+from .models import ColumnProfile, TableProfile
+
+# Minimum score for two columns to share a cluster.
+CLUSTER_THRESHOLD = 0.55
+
+# A name match alone, with no value evidence, has to be strong to count -
+# this is the WRTG_AGT floor. Below it, a name coincidence contributes nothing.
+NAME_FLOOR = 0.62
+
+# Types that should not block a match when the underlying concept is the same.
+# Ids and amounts cross these lines constantly between a legacy fixed-width
+# extract (POL_NO as integer) and a modern typed platform (policy_id as string).
+_TYPE_KIN: dict[str, set[str]] = {
+    "integer": {"integer", "decimal", "string"},
+    "decimal": {"decimal", "integer", "string"},
+    "string": {"string", "integer", "decimal"},
+    "date": {"date", "string"},
+    "boolean": {"boolean", "string"},
+}
+
+# Columns the source system emits about itself, not about the entity. They have
+# no counterpart concept in another system's business data.
+_METADATA_PREFIXES = ("_cdc", "_meta", "_ingest", "_load")
+
+
+@dataclass
+class ClusterMember:
+    source_name: str
+    table_name: str
+    column: ColumnProfile
+
+
+@dataclass
+class ColumnCluster:
+    """A set of columns, at most one per source, judged to mean the same thing."""
+    members: list[ClusterMember] = field(default_factory=list)
+    confidence: float = 0.0
+    evidence: list[str] = field(default_factory=list)
+
+    @property
+    def sources(self) -> set[str]:
+        return {m.source_name for m in self.members}
+
+    def column_names(self) -> list[str]:
+        return [f"{m.source_name}.{m.column.name}" for m in self.members]
+
+
+# ── Semantic signal ──────────────────────────────────────────────────────────
+
+def _value_tokens(col: ColumnProfile) -> set[str]:
+    """Comparable value vocabulary, normalized for case and whitespace."""
+    tokens: set[str] = set()
+    for v in (col.value_distribution or {}):
+        tokens.add(str(v).strip().upper())
+    for v in (col.sample_values or []):
+        tokens.add(str(v).strip().upper())
+    return {t for t in tokens if t}
+
+
+def _value_overlap(a: ColumnProfile, b: ColumnProfile) -> tuple[float, bool]:
+    """Jaccard overlap of value vocabularies.
+
+    Returns (score, applicable). Applicable is False where overlap carries no
+    information - free text, high-cardinality ids, dates - so a 0.0 is never
+    read as evidence of difference. Two policy-id columns from different systems
+    legitimately share no values at all.
+    """
+    a_bounded = a.is_coded_column or len(a.value_distribution or {}) > 0
+    b_bounded = b.is_coded_column or len(b.value_distribution or {}) > 0
+    if not (a_bounded and b_bounded):
+        return 0.0, False
+
+    ta, tb = _value_tokens(a), _value_tokens(b)
+    if not ta or not tb:
+        return 0.0, False
+
+    union = len(ta | tb)
+    return (len(ta & tb) / union if union else 0.0), True
+
+
+# ── Name normalization ───────────────────────────────────────────────────────
+# Legacy extracts abbreviate aggressively; modern platforms spell things out.
+# Comparing EFF_DT to effective_date as raw strings measures shared prefix
+# characters, not shared meaning - every one of EFF_DT/EXP_DT/POL_NO scored an
+# identical 0.667 against its true counterpart, which is a signal that cannot
+# tell a real match from a coincidence.
+#
+# Expanding known abbreviations before comparison makes a true match look like
+# a true match (~0.95) while leaving unrelated pairs where they were. This
+# raises real matches rather than lowering the bar, so precision is unaffected.
+#
+# Keep this list conservative: only abbreviations that are unambiguous in a
+# data-column context. An expansion that guesses wrong actively creates false
+# matches, which is the failure mode this module exists to avoid.
+_ABBREVIATIONS: dict[str, str] = {
+    # identifiers
+    "no": "number", "num": "number", "nbr": "number", "id": "identifier",
+    "cd": "code", "seq": "sequence", "ref": "reference",
+    # dates
+    "dt": "date", "eff": "effective", "exp": "expiration", "term": "termination",
+    "ts": "timestamp", "yr": "year", "mo": "month",
+    # money
+    "amt": "amount", "prem": "premium", "annu": "annual", "mnthly": "monthly",
+    "lim": "limit", "ded": "deductible", "bal": "balance",
+    # policy / insurance domain
+    "pol": "policy", "ins": "insured", "cov": "coverage", "agt": "agent",
+    "agcy": "agency", "wrtg": "writing", "uw": "underwriting", "stat": "status",
+    "cncl": "cancellation", "rsn": "reason", "carr": "carrier", "prod": "product",
+    "chnl": "channel", "regn": "region", "terr": "territory", "rsk": "risk",
+    "scr": "score", "addl": "additional", "rel": "relationship",
+    "winbk": "win back", "flg": "flag", "lob": "line of business",
+    # party / location
+    "nm": "name", "addr": "address", "st": "state",
+    "cust": "customer", "acct": "account", "dist": "distribution",
+}
+
+
+def _expand(token: str) -> str:
+    """Expand a single abbreviated token, or return it unchanged."""
+    return _ABBREVIATIONS.get(token, token)
+
+
+def _normalize_name(name: str) -> str:
+    """Split a column name into tokens and expand known abbreviations.
+
+    EFF_DT           -> "effective date"
+    POL_NO           -> "policy number"
+    ANNU_PREM_AMT    -> "annual premium amount"
+    effective_date   -> "effective date"
+    """
+    raw = name.lower().replace("_", " ").replace("-", " ")
+    tokens = [t for t in raw.split() if t]
+    return " ".join(_expand(t) for t in tokens)
+
+
+def _name_similarity(a: str, b: str) -> float:
+    """Fuzzy name match over abbreviation-expanded tokens."""
+    na, nb = _normalize_name(a), _normalize_name(b)
+    return max(fuzz.token_set_ratio(na, nb), fuzz.token_sort_ratio(na, nb)) / 100.0
+
+
+# ── Profile gate ─────────────────────────────────────────────────────────────
+
+def _types_compatible(ta: str, tb: str) -> bool:
+    """Kinship in either direction. _TYPE_KIN rows are not mirror images
+    (date accepts string, string does not list date), so a one-way lookup
+    would make the score - and the clusters - depend on source order."""
+    return tb in _TYPE_KIN.get(ta, {ta}) or ta in _TYPE_KIN.get(tb, {tb})
+
+
+def _profile_gate(
+    a: ColumnProfile, b: ColumnProfile, rows_a: int, rows_b: int
+) -> float:
+    """A 0-1 multiplier on the semantic signal. Can only reduce, never add.
+
+    Starts at 1.0 and applies penalties for shape disagreement, so compatible
+    columns pass through unchanged and incompatible ones collapse.
+    """
+    gate = 1.0
+    type_compatible = _types_compatible(a.inferred_type, b.inferred_type)
+
+    # Unrelated types are close to disqualifying.
+    if not type_compatible:
+        gate *= 0.25
+    elif a.inferred_type != b.inferred_type:
+        gate *= 0.85  # kin but not identical - mild penalty
+
+    # Distinctness relative to row count. A near-unique id and a 3-value code
+    # are not the same concept however similar their names.
+    ratio_a = a.distinct_count / rows_a if rows_a else 0.0
+    ratio_b = b.distinct_count / rows_b if rows_b else 0.0
+    gate *= 1.0 - 0.6 * min(abs(ratio_a - ratio_b), 1.0)
+
+    # Null behaviour. A column that is always populated and one that is mostly
+    # empty are unlikely to be the same field.
+    gate *= 1.0 - 0.3 * min(abs(a.null_rate - b.null_rate), 1.0)
+
+    # Flag disagreement is a mild penalty; agreement is not a bonus, because
+    # agreement on shape is exactly what this function refuses to treat as
+    # evidence.
+    for flag in ("is_id_column", "is_coded_column", "is_cents_integer"):
+        if getattr(a, flag) != getattr(b, flag):
+            gate *= 0.90
+
+    # Floor the gate for type-compatible pairs. Compounding three or four mild
+    # penalties punishes ordinary cross-system variation (integer vs string ids,
+    # different row counts) as harshly as genuine incompatibility.
+    floor = 0.72 if type_compatible else 0.0
+    return max(gate, floor)
+
+
+def _is_metadata(col: ColumnProfile) -> bool:
+    return col.name.lower().startswith(_METADATA_PREFIXES)
+
+
+# ── Pair scoring ─────────────────────────────────────────────────────────────
+
+def score_pair(
+    a: ColumnProfile, b: ColumnProfile, rows_a: int, rows_b: int
+) -> tuple[float, list[str]]:
+    """Equivalence score for two columns from different sources.
+
+    semantic * gate. If neither semantic signal fires, the pair scores zero
+    regardless of how similar the two columns look structurally.
+    """
+    # Source metadata has no cross-system counterpart concept.
+    if _is_metadata(a) or _is_metadata(b):
+        return 0.0, []
+
+    overlap, overlap_applies = _value_overlap(a, b)
+    name = _name_similarity(a.name, b.name)
+
+    evidence: list[str] = []
+
+    if overlap_applies and overlap > 0.0:
+        # Vocabulary evidence available: lead with it, let a strong name
+        # corroborate but not dominate. A thin overlap (value_distribution is
+        # only the top 5 values) must not sink a pair the name alone would
+        # carry, so never score below the name-only branch.
+        semantic = 0.75 * overlap + 0.25 * name
+        if name >= NAME_FLOOR:
+            semantic = max(semantic, 0.85 * name)
+        evidence.append(f"value overlap {overlap:.2f}")
+        if name >= NAME_FLOOR:
+            evidence.append(f"name {name:.2f}")
+    elif name >= NAME_FLOOR:
+        # Name only. Usable, but never at full strength - this is the signal
+        # that lies.
+        semantic = 0.85 * name
+        evidence.append(f"name {name:.2f}")
+    else:
+        # Nothing semantic to go on. Shape alone is not a match.
+        return 0.0, []
+
+    gate = _profile_gate(a, b, rows_a, rows_b)
+    if round(gate, 2) < 1.0:
+        evidence.append(f"shape gate {gate:.2f}")
+
+    return semantic * gate, evidence
+
+
+# ── Clustering ───────────────────────────────────────────────────────────────
+
+def cluster_columns(
+    tables: list[tuple[str, TableProfile]],
+    threshold: float = CLUSTER_THRESHOLD,
+) -> list[ColumnCluster]:
+    """Group columns across sources into same-concept clusters.
+
+    Candidate pairs are first filtered to mutual best matches per source pair,
+    then agglomerated greedily in descending score order. A column joins a
+    cluster only if it beats the threshold against every existing member and no
+    column from its own source is already there, so a strong pair cannot drag a
+    weak third column in behind it.
+
+    Each entry in ``tables`` is (source_name, table). source_name is the
+    one-column-per-cluster unit, so it must be unique across entries.
+    """
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError(f"threshold must be in (0, 1], got {threshold}")
+    labels = [source_name for source_name, _ in tables]
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"duplicate source names in cluster input: {labels}")
+
+    members: list[ClusterMember] = []
+    row_counts: dict[str, int] = {}
+    for source_name, table in tables:
+        row_counts[source_name] = table.row_count
+        for col in table.columns:
+            members.append(ClusterMember(source_name, table.name, col))
+
+    scored: list[tuple[float, int, int, list[str]]] = []
+    for i in range(len(members)):
+        for j in range(i + 1, len(members)):
+            mi, mj = members[i], members[j]
+            if mi.source_name == mj.source_name:
+                continue  # same source: different concepts by construction
+            score, evidence = score_pair(
+                mi.column, mj.column,
+                row_counts[mi.source_name], row_counts[mj.source_name],
+            )
+            if score >= threshold:
+                scored.append((score, i, j, evidence))
+
+    scored.sort(key=lambda s: s[0], reverse=True)
+
+    # Mutual best match: a pair survives only if each column is the other's
+    # best available partner in the other column's source. Without this, a
+    # high-scoring pair can claim a column that another column matches better
+    # and is now locked out of.
+    #
+    # Best is tracked per (column, other source), not per column: with three or
+    # more sources a column has a legitimate best partner in EACH other source,
+    # and a single global best would filter out every pair but one, so no
+    # cluster could ever grow past two members.
+    #
+    # Known limit: this only arbitrates between candidates on score. On the
+    # PAS-L x PAS-M sample, TERM_EFF_DT still outscores EFF_DT against
+    # effective_date (both names reach 1.00 on token_set_ratio; the shape gate
+    # then favours TERM_EFF_DT), so it takes the slot EFF_DT belongs in.
+    best_for: dict[tuple[int, str], tuple[float, int]] = {}
+    for score, i, j, _ev in scored:
+        si, sj = members[i].source_name, members[j].source_name
+        if score > best_for.get((i, sj), (0.0, -1))[0]:
+            best_for[(i, sj)] = (score, j)
+        if score > best_for.get((j, si), (0.0, -1))[0]:
+            best_for[(j, si)] = (score, i)
+
+    scored = [
+        (s, i, j, ev) for s, i, j, ev in scored
+        if best_for.get((i, members[j].source_name), (0.0, -1))[1] == j
+        and best_for.get((j, members[i].source_name), (0.0, -1))[1] == i
+    ]
+
+    cluster_of: dict[int, ColumnCluster] = {}
+    clusters: list[ColumnCluster] = []
+
+    def _fits(cluster: ColumnCluster, idx: int) -> float | None:
+        """Weakest score between the candidate and every member, or None if
+        the candidate's source is already represented or any pair is below
+        threshold."""
+        cand = members[idx]
+        if cand.source_name in cluster.sources:
+            return None
+        weakest = 1.0
+        for m in cluster.members:
+            s, _ = score_pair(
+                m.column, cand.column,
+                row_counts[m.source_name], row_counts[cand.source_name],
+            )
+            if s < threshold:
+                return None
+            weakest = min(weakest, s)
+        return weakest
+
+    for score, i, j, evidence in scored:
+        ci, cj = cluster_of.get(i), cluster_of.get(j)
+
+        if ci is None and cj is None:
+            cluster = ColumnCluster(
+                members=[members[i], members[j]],
+                confidence=round(score, 3),
+                evidence=evidence,
+            )
+            clusters.append(cluster)
+            cluster_of[i] = cluster_of[j] = cluster
+        elif ci is not None and cj is None:
+            weakest = _fits(ci, j)
+            if weakest is not None:
+                ci.members.append(members[j])
+                cluster_of[j] = ci
+                ci.confidence = round(min(ci.confidence, weakest), 3)
+        elif ci is None and cj is not None:
+            weakest = _fits(cj, i)
+            if weakest is not None:
+                cj.members.append(members[i])
+                cluster_of[i] = cj
+                cj.confidence = round(min(cj.confidence, weakest), 3)
+        # Both already clustered: leave them. Merging two established clusters
+        # on one cross pair is how unrelated concepts get chained together.
+
+    # Columns with no cross-source match are concepts unique to one source. They
+    # still belong in a synthesized target, so they survive as clusters of one.
+    for idx, m in enumerate(members):
+        if idx not in cluster_of:
+            clusters.append(ColumnCluster(
+                members=[m], confidence=0.0, evidence=["no cross-source match"],
+            ))
+
+    clusters.sort(key=lambda c: (-len(c.members), -c.confidence))
+    return clusters

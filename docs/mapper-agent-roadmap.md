@@ -345,6 +345,68 @@ partial) multi-table dataset without blocking on exhaustive catalog work.
 
 ---
 
+## Phase G — Unknown-target resolution
+
+### MAP-10: Unknown-target schema synthesis — **STEP 1 (CLUSTERING) DONE**
+
+**Goal:** Given several source tables and *no* predefined canonical model,
+infer the target schema itself — which columns across sources represent the
+same concept, what the unified field should be, and how each source reconciles
+to it — then map every source into that synthesized target.
+
+**Why:** Everything through MAP-7 assumes the target is known. Real onboarding
+often has no canonical model: a carrier acquires two books on different
+platforms, or a client has never had a unified model at all. Determining what
+the target *should be* is the work, and today it is entirely manual — the same
+column-by-column reverse-engineering MAP-1..5 automated, one level up.
+
+**Distinct from MAP-6:** MAP-6 is a known target split across multiple source
+tables (join inference). MAP-10 is an unknown target across multiple sources
+(concept inference). Adjacent, not overlapping.
+
+**Scope:**
+- **Cross-source column clustering** — group columns representing the same
+  concept, with no target to anchor against. **Done** —
+  `schema_inference/cluster.py` (`score = semantic × shape gate`, mutual best
+  match per source pair, at most one column per source per cluster),
+  `schema_inference/cluster_score.py` (pairwise P/R against the existing
+  catalogs: a targeted column clustered with a null-target one is a false
+  positive; two null-target columns are reported as *unscored*, not hidden;
+  a pair joined only through a catalog `secondary_target` is reported
+  separately and counted as neither TP nor FP), CLI
+  `python -m schema_inference cluster <profile>... --eval`. Results are
+  independent of source order (type kinship is checked both ways).
+  Baseline on PAS-L × PAS-M sample: **P 0.900 / R 0.692 / F1 0.783** (13
+  truth pairs), pinned as a floor in `tests/test_cluster_score.py`. The
+  remaining errors: `TERM_EFF_DT` takes `effective_date` from `EFF_DT`
+  (names tie at 1.00 on token-set, the shape gate breaks the tie the wrong
+  way, the one FP); `POL_NO` pairs with `policy_number` (its
+  `secondary_target`, so not counted against precision) and so misses
+  `policy_id`, the unknown-target form of a contested mapping; `ANNU_PREM_AMT` ↔
+  `written_premium` and `COV_A_DED` ↔ `policy_deductible` need domain
+  semantics no string metric reaches. Four unscored clusters include one
+  clear miss (`INS_ADDR` ↔ `insured_ein`, joined on the shared "insured"
+  token) the metric cannot see. A token-coverage penalty aimed at the
+  `TERM_EFF_DT` case was tried and rejected (fixed that pair, broke
+  `COV_A_LIM` / `PRIOR_CARR_CD` / `WINBK_FLG`; F1 fell).
+- **Agent pass over unmatched columns** — the deterministic ceiling (below) is
+  semantic, not tunable. Columns that string similarity cannot reconcile go to
+  an LLM with their profiles and sample values, same rules-then-reasoning
+  pattern as the mapper.
+- **Field synthesis** — per cluster, propose a `CanonicalField`: name,
+  target_type, aliases (the source names that clustered), and the per-source
+  transformation needed to reach it.
+- **Conflict surfacing** — clusters with no defensible unified type, or
+  concepts present in one source and absent in another, surface for human
+  resolution. Reuses the MAP-3 contested-mapping review pattern.
+- **Registry emission** — output a `list[CanonicalField]` registered via
+  `canonical/registry.py`'s existing `register_dynamic_schema()`, so a
+  synthesized target drives `map_table()`/`run_mapping()` unchanged.
+
+**Depends on:** MAP-4.1 ✅ — `register_dynamic_schema()` is the output interface.
+
+---
+
 ## Open design gaps
 
 | Gap | Impact | Owner |
