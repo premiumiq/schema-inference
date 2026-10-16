@@ -34,12 +34,14 @@ Design notes:
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 
 from ..llm.registry import get_provider, model_for
 from ..models import ColumnProfile
 from .throttle import call_with_retry
+from .tools import _CATALOG_DIR
 
 MODEL = "claude-sonnet-4-6"
 
@@ -61,6 +63,12 @@ counterpart at all.
 Your job is to identify pairs that represent the SAME underlying business \
 concept, reasoning from what the data actually contains, not from the column \
 names. Two columns match when a single canonical field could hold both.
+
+Each column may carry a "catalog" block describing what that column actually \
+holds in its source system. This is curated domain knowledge and it is the \
+strongest evidence available - when two catalog descriptions refer to the same \
+business concept, that is a match even if the column names look nothing alike. \
+Read it before anything else.
 
 Critical instructions:
 
@@ -107,16 +115,74 @@ def _model() -> str:
     return model_for("cluster_agent") or MODEL
 
 
-def _describe(col: ColumnProfile) -> dict:
-    """Compact column description for the prompt. Sample values are the point -
-    these columns are here because their names were not enough."""
-    return {
+# ── Value catalog context ────────────────────────────────────────────────────
+# The columns that reach this agent are exactly the ones whose NAMES were not
+# enough - that is why the deterministic pass left them behind. Sending only a
+# name, a type and six sample values asks the model to re-derive semantics that
+# the project already has written down.
+#
+# The value catalogs carry that semantics. ANNU_PREM_AMT is described as
+# "Annual written premium ... integer cents" and written_premium as "Annual
+# written premium, ALREADY in decimal dollars" - the same phrase on both sides.
+# MNTHLY_PREM_AMT is described as "Monthly premium = ANNU_PREM_AMT / 12", which
+# is precisely the distinction the agent kept getting wrong.
+#
+# Only the semantic fields are included (type, description, notes). The
+# mechanical ones - transformation expressions, value maps, min/max bounds - are
+# left out: they cost tokens across every column and say nothing about whether
+# two columns mean the same thing.
+#
+# Caveat worth stating plainly: pasm's written_premium entry names PAS-L's
+# ANNU_PREM_AMT directly in its notes. Where this agent succeeds on that pair,
+# the catalog is doing much of the work, not the model's own reasoning.
+
+_CATALOG_CACHE: dict[str, dict] = {}
+
+
+def _load_value_catalog(source_name: str) -> dict:
+    """column_name -> catalog entry for a source. Missing or malformed catalogs
+    yield {}, so the agent degrades to name-and-samples rather than failing."""
+    if source_name in _CATALOG_CACHE:
+        return _CATALOG_CACHE[source_name]
+
+    path = os.path.join(_CATALOG_DIR, f"{source_name}_value_catalog.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            catalog = json.load(f) or {}
+        entries = catalog.get("columns", {})
+    except Exception:
+        entries = {}
+
+    _CATALOG_CACHE[source_name] = entries
+    return entries
+
+
+def _catalog_context(entry: dict | None) -> dict:
+    """Semantic fields only - what the column means, not how to transform it."""
+    if not entry:
+        return {}
+    context = {}
+    for field_name in ("type", "description", "notes"):
+        value = entry.get(field_name)
+        if value:
+            context[field_name] = value
+    return context
+
+
+def _describe(col: ColumnProfile, catalog: dict | None = None) -> dict:
+    """Column description for the prompt: profile stats plus whatever the
+    source's value catalog says this column means."""
+    described = {
         "name": col.name,
         "type": col.inferred_type,
         "distinct_count": col.distinct_count,
         "null_rate": round(col.null_rate, 3),
         "samples": [str(v) for v in (col.sample_values or [])[:6]],
     }
+    context = _catalog_context((catalog or {}).get(col.name))
+    if context:
+        described["catalog"] = context
+    return described
 
 
 def _extract_json(raw: str) -> dict | None:
@@ -154,9 +220,18 @@ def match_unclustered(
     if not columns_a or not columns_b:
         return []
 
+    catalog_a = _load_value_catalog(source_a)
+    catalog_b = _load_value_catalog(source_b)
+
     payload = {
-        "source_a": {"name": source_a, "columns": [_describe(c) for c in columns_a]},
-        "source_b": {"name": source_b, "columns": [_describe(c) for c in columns_b]},
+        "source_a": {
+            "name": source_a,
+            "columns": [_describe(c, catalog_a) for c in columns_a],
+        },
+        "source_b": {
+            "name": source_b,
+            "columns": [_describe(c, catalog_b) for c in columns_b],
+        },
     }
 
     provider = get_provider("cluster_agent")
